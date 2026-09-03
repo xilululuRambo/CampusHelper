@@ -1,0 +1,126 @@
+# 配置Multipart（文件上传）
+spring:
+  # 激活开发环境配置
+  profiles:
+    active: dev
+  servlet:
+    multipart:
+      # 最大文件大小
+      # 最大请求大小
+      max-file-size: 10MB
+      max-request-size: 10MB
+
+  # 配置ES
+  elasticsearch:
+    uris: http://192.168.100.128:9200
+
+  # 配置数据库
+  datasource:
+    username: root
+    password: ${DB_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://192.168.100.128:3306/campusHelper?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+
+  # 配置Redis
+  data:
+    redis:
+      host: 192.168.100.128
+      port: 6379
+      password: ${REDIS_PASSWORD}
+      database: 0
+    # 配置MongoDB
+    mongodb:
+      host: 192.168.100.128
+      port: 27017
+      username: admin
+      password: ${DB_PASSWORD}
+      database: campus_chat
+      authentication-database: admin  # 必须加这一行！
+
+  rabbitmq:
+    host: 192.168.100.128
+    port: 5672
+    username: admin
+    password: ${RABBITMQ_PASSWORD}
+    # 发布者确认，保证消息不丢
+    publisher-confirm-type: correlated
+    # 消费者手动确认，处理完再删消息
+    listener:
+      simple:
+        acknowledge-mode: manual
+        prefetch: 50
+        # 并发消费者：单队列多消费者竞争消费，吞吐线性放大；幂等靠 message_id 唯一索引兜底，并发安全
+        concurrency: 4
+        # 忙时弹性扩容上限（空闲时回收至 concurrency）
+        max-concurrency: 8
+
+# 配置knife4j
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    enabled: true
+  default-flat-param-object: true
+
+# 配置Mybatis-Plus
+mybatis-plus:
+  mapper-locations: classpath:mapper/**/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+
+# 配置JWT
+jwt:
+  secret: ${JWT_SECRET}
+  access-expiration:  1800000  # 30分钟
+  refresh-expiration: 604800000  # 7天
+
+# 配置ES索引：应用启动时自动创建/初始化索引与映射
+es:
+  index-init-enabled: true
+
+# 配置阿里云OSS
+aliyun:
+  oss:
+    access-key-id: ${ALIYUN_ACCESS_KEY_ID}
+    access-key-secret: ${ALIYUN_ACCESS_KEY_SECRET}
+    bucket-name: my-campus-helper
+    endpoint: oss-cn-beijing.aliyuncs.com
+
+
+# 配置服务器端口和路径
+server:
+  servlet:
+    context-path: /api
+
+# 配置XXL-JOB分布式任务调度
+# 本地未部署调度中心时：将 xxl.job.enabled 改为 false 即可关闭执行器
+xxl:
+  job:
+    enabled: true
+    admin-addresses: http://localhost:8080/xxl-job-admin
+    access-token: default_token
+    executor:
+      appname: campus-helper
+      address:
+      ip:
+      port: 9999
+      log-path: ./logs/xxl-job
+      log-retention-days: 30
+
+# WebSocket 配置（Origin 白名单 + STOMP 外部 broker relay）
+# relayHost/Port/Client/System 用户/密码：RabbitMQ STOMP 插件的连接信息
+# 容器侧需执行：rabbitmq-plugins enable rabbitmq_stomp
+# prod 部署时必须把 allowed-origins 改为前端真实域名（防 CSWSH 跨站 WebSocket 劫持）；
+# 默认空列表 = 拒绝所有跨域建连，dev 在 application-dev.yml 中覆盖为 *
+app:
+  websocket:
+    broker-type: ${WS_BROKER_TYPE:relay}                  # simple=单实例内存broker；relay=外部RabbitMQ(多实例必须)
+    allowed-origins: ${WS_ALLOWED_ORIGINS:}              # CSWSH 防护：默认空（拒绝跨域），dev 覆盖为 *
+    relay-host: ${WS_RELAY_HOST:192.168.100.128}          # RabbitMQ STOMP 插件地址
+    relay-port: ${WS_RELAY_PORT:61613}                    # STOMP 默认端口（区别于 AMQP 5672）
+    client-login: ${WS_RELAY_CLIENT_USER:admin}           # 应用连 broker 的业务账号
+    client-passcode: ${WS_RELAY_CLIENT_PASS:${RABBITMQ_PASSWORD}}
+    system-login: ${WS_RELAY_SYSTEM_USER:admin}           # broker 系统消息账号（建议独立用户，便于权限隔离）
+    system-passcode: ${WS_RELAY_SYSTEM_PASS:${RABBITMQ_PASSWORD}}
+

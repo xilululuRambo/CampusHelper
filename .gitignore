@@ -1,0 +1,47 @@
+# ========== 1. 核心编译产物（必须忽略） ==========
+# Maven 编译输出
+target/
+!target/classes/*.xml  # 如果有必须保留的资源文件可以反选
+*.jar
+*.war
+*.ear
+
+# Gradle（如果不用可以删掉）
+build/
+out/
+
+# ========== 2. IDEA 专属配置（必须忽略） ==========
+.idea/
+*.iml
+*.iws
+*.ipr
+/workspace.xml
+/shelf/
+/httpRequests/
+/dataSources/
+/dataSources.local.xml
+claudeCodeTabState.xml
+GrepConsole.xml
+modules.xml
+
+# ========== 3. 日志和临时文件 ==========
+logs/
+*.log
+*.log.*
+*.tmp
+*.swp
+*~
+
+# ========== 4. 系统文件 ==========
+.DS_Store
+Thumbs.db
+.DS_Store?
+._*
+
+# ========== 5. 环境配置（可选，按需要加） ==========
+# 本地配置文件，避免提交敏感信息
+application-local.yml
+application-dev.yml
+bootstrap-local.yml
+
+.env

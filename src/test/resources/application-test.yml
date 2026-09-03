@@ -1,0 +1,72 @@
+# ================= 测试专用配置（@ActiveProfiles("test")）=================
+# 隔离原则：数据库用 campusHelper_test、Redis 用 db1、Mongo 用 campus_chat_test
+# RabbitMQ 消费者容器关闭（生产者整体 mock）；ES/OSS 全部 mock，不依赖外部可用性
+spring:
+  datasource:
+    username: root
+    password: ${DB_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://192.168.100.128:3306/campusHelper_test?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+
+  data:
+    redis:
+      host: 192.168.100.128
+      port: 6379
+      password: ${REDIS_PASSWORD:}
+      database: 1
+    mongodb:
+      host: 192.168.100.128
+      port: 27017
+      username: ${MONGODB_USERNAME:admin}   # 与 dev 一致：服务器上 root 用户认证失败，admin 可用
+      password: ${MONGODB_PASSWORD:${DB_PASSWORD:}}
+      database: campus_chat_test
+      authentication-database: admin
+
+  rabbitmq:
+    host: 192.168.100.128
+    port: 5672
+    username: admin
+    password: ${RABBITMQ_PASSWORD:}
+    listener:
+      simple:
+        auto-startup: false   # 关闭消费者容器，测试不连 MQ
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl   # 覆盖生产 StdOutImpl，避免测试刷屏
+
+# OSS 配置：本地无 .env 时用假值兜底（AliyunOssUtil 已被 mock，仅保证上下文可启动）
+aliyun:
+  oss:
+    access-key-id: ${ALIYUN_ACCESS_KEY_ID:test}
+    access-key-secret: ${ALIYUN_ACCESS_KEY_SECRET:test}
+    bucket-name: test-bucket
+    endpoint: oss-cn-beijing.aliyuncs.com
+
+# JWT：测试固定密钥（必须 >= 32 字节），并覆盖生产环境误配置的 3 万年有效期
+# 这里同时作为「access-expiration 配置回归」的对照：若有人改回超长值，相关配置断言用例会变红
+jwt:
+  secret: ${JWT_SECRET:test-secret-key-for-campus-helper-api-tests-0123456789}
+  access-expiration: 1800000
+  refresh-expiration: 604800000
+
+# ES 索引初始化：测试环境关闭（EsUtil 已 mock，避免依赖外部 ES）
+es:
+  index-init-enabled: false
+
+# XXL-JOB 执行器：测试环境关闭（定时任务不参与测试，避免 executor 连接调度中心）
+xxl:
+  job:
+    enabled: false
+
+# WebSocket 消息代理：测试环境用内存 broker（simple）——
+# relay 需要 RabbitMQ STOMP 插件(61613) + Reactor Netty，测试不依赖外部 broker，
+# 与「RabbitMQ 消费者容器关闭」同一隔离思路
+# passcode 显式给固定值：simple 模式不建立 relay 连接，但 @ConfigurationProperties
+# 绑定阶段仍会解析占位符，若不覆盖会依赖 RABBITMQ_PASSWORD 环境变量，缺失即上下文启动失败
+app:
+  websocket:
+    broker-type: simple
+    client-passcode: test-client-pass
+    system-passcode: test-system-pass

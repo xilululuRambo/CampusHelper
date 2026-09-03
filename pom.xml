@@ -1,0 +1,282 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.5</version>
+        <relativePath/> <!-- lookup parent from repository -->
+    </parent>
+
+    <groupId>com.rambo</groupId>
+    <artifactId>CampusHelper</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <name>CampusHelper</name>
+    <description>CampusHelper</description>
+
+    <url/>
+    <licenses>
+        <license/>
+    </licenses>
+    <developers>
+        <developer/>
+    </developers>
+    <scm>
+        <connection/>
+        <developerConnection/>
+        <tag/>
+        <url/>
+    </scm>
+
+    <properties>
+        <java.version>17</java.version>
+        <jjwt.version>0.12.5</jjwt.version>
+        <redisson.version>3.23.5</redisson.version>
+        <!--        <minio.version>8.5.7</minio.version>-->
+        <xxl-job.version>2.4.1</xxl-job.version>
+        <hutool.version>5.8.25</hutool.version>
+        <knife4j.version>4.4.0</knife4j.version>
+        <lombok.version>1.18.32</lombok.version>
+        <!--        <sensitive-word.version>0.12.0</sensitive-word.version>-->
+    </properties>
+
+    <dependencies>
+        <!-- Spring Boot Web 模块 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- 数据库驱动 -->
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Lombok 代码生成工具 -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- 测试框架 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Mybatis-Plus 数据库操作框架 -->
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+            <version>3.5.5</version>
+        </dependency>
+
+        <!-- Hutool 全功能工具类 -->
+        <dependency>
+            <groupId>cn.hutool</groupId>
+            <artifactId>hutool-all</artifactId>
+            <version>${hutool.version}</version>
+        </dependency>
+
+        <!-- Knife4j API 文档 (基于 OpenAPI 3) -->
+        <dependency>
+            <groupId>com.github.xiaoymin</groupId>
+            <artifactId>knife4j-openapi3-jakarta-spring-boot-starter</artifactId>
+            <version>${knife4j.version}</version>
+        </dependency>
+
+        <!-- JWT 令牌支持 (新技术点: 用户无状态认证) -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+            <version>${jjwt.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <version>${jjwt.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <version>${jjwt.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Redis 基础（Spring Data Redis + Lettuce） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
+        <!-- Spring 缓存核心 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-cache</artifactId>
+        </dependency>
+
+        <!-- Redisson 分布式锁、BitMap等高级特性 (新技术点②⑦⑧⑩) -->
+        <dependency>
+            <groupId>org.redisson</groupId>
+            <artifactId>redisson-spring-boot-starter</artifactId>
+            <version>${redisson.version}</version>
+        </dependency>
+
+        <!-- XXL-JOB 分布式任务调度 -->
+        <dependency>
+            <groupId>com.xuxueli</groupId>
+            <artifactId>xxl-job-core</artifactId>
+            <version>${xxl-job.version}</version>
+        </dependency>
+
+        <!-- 验证框架 (Bean Validation) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+
+        <!-- 阿里云 OSS SDK -->
+        <dependency>
+            <groupId>com.aliyun.oss</groupId>
+            <artifactId>aliyun-sdk-oss</artifactId>
+            <version>3.18.1</version>
+        </dependency>
+
+        <!-- JAXB 相关依赖 (Java 9+) -->
+        <dependency>
+            <groupId>javax.xml.bind</groupId>
+            <artifactId>jaxb-api</artifactId>
+            <version>2.3.1</version>
+        </dependency>
+
+        <dependency>
+            <groupId>javax.activation</groupId>
+            <artifactId>activation</artifactId>
+            <version>1.1.1</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.glassfish.jaxb</groupId>
+            <artifactId>jaxb-runtime</artifactId>
+            <version>2.3.3</version>
+        </dependency>
+
+        <!-- Elasticsearch -->
+        <dependency>
+            <groupId>co.elastic.clients</groupId>
+            <artifactId>elasticsearch-java</artifactId>
+            <version>8.11.0</version>
+        </dependency>
+
+        <!-- AOP 核心依赖（必须加，否则用不了 AopContext） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aop</artifactId>
+        </dependency>
+
+        <!-- Jackson JSON 处理库 -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+
+        <!-- Spring Boot 环境变量加载 -->
+        <dependency>
+            <groupId>me.paulschwarz</groupId>
+            <artifactId>spring-dotenv</artifactId>
+            <version>4.0.0</version>
+        </dependency>
+
+        <!-- RabbitMQ -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-amqp</artifactId>
+        </dependency>
+
+        <!-- WebSocket（实时推送） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-websocket</artifactId>
+        </dependency>
+
+        <!-- MongoDB 数据库 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-mongodb</artifactId>
+        </dependency>
+
+        <!-- BCrypt密码加密依赖（Spring Security crypto，API 与 jbcrypt 一致，随 Boot BOM 维护版本） -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-crypto</artifactId>
+        </dependency>
+
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <excludes>
+                        <exclude>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                            <version>${lombok.version}</version>
+                        </exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>default-compile</id>
+                        <phase>compile</phase>
+                        <goals>
+                            <goal>compile</goal>
+                        </goals>
+                        <configuration>
+                            <parameters>true</parameters>
+                            <annotationProcessorPaths>
+                                <path>
+                                    <groupId>org.projectlombok</groupId>
+                                    <artifactId>lombok</artifactId>
+                                    <version>${lombok.version}</version>
+                                </path>
+                            </annotationProcessorPaths>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>default-testCompile</id>
+                        <phase>test-compile</phase>
+                        <goals>
+                            <goal>testCompile</goal>
+                        </goals>
+                        <configuration>
+                            <parameters>true</parameters>
+                            <annotationProcessorPaths>
+                                <path>
+                                    <groupId>org.projectlombok</groupId>
+                                    <artifactId>lombok</artifactId>
+                                    <version>${lombok.version}</version>
+                                </path>
+                            </annotationProcessorPaths>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>
