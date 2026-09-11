@@ -1,86 +1,58 @@
 package com.rambo.module.task.server.job;
 
-import cn.hutool.core.bean.BeanUtil;
-import com.rambo.infrastructure.search.EsDTO;
-import com.rambo.infrastructure.search.EsSyncRetry;
-import com.rambo.infrastructure.search.EsSyncRetryService;
-import com.rambo.infrastructure.search.EsUtil;
-import com.rambo.infrastructure.storage.OssAsyncUtil;
-import com.rambo.module.task.pojo.entity.Task;
-import com.rambo.module.task.server.service.TaskService;
+import com.rambo.common.constants.PrefixConstants;
+import com.rambo.infrastructure.search.EsSyncOutbox;
+import com.rambo.infrastructure.search.EsSyncOutboxService;
+import com.rambo.module.task.server.service.impl.TaskEsSyncService;
 import com.xxl.job.core.context.XxlJobHelper;
 import com.xxl.job.core.handler.annotation.XxlJob;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
-import org.springframework.util.StringUtils;
 
-import java.util.Arrays;
 import java.util.List;
 
 /**
- * XXL-JOB：重试任务 ES 索引同步（t_es_sync_retry 中 dataType=task 的记录）
+ * XXL-JOB：任务 ES 同步补偿任务。
  *
- * <p>实体存在 → 同步索引；实体已被删除 → 清除 ES 数据 + 异步删除 OSS 文件；
- * 单条失败 → 重试次数 +1，超 5 次终止。</p>
+ * <p>扫描 t_es_sync_outbox 中 dataType=task 且 PENDING 的意图，逐条调用
+ * {@link TaskEsSyncService#dispatch(Long)} 回源任务并同步。这是事务性 Outbox
+ * 主链路的兜底：异步派发失败（进程崩溃、线程池拒绝、ES 短暂不可用）都由这里收敛。</p>
  */
 @Slf4j
 @Component
 public class TaskEsRetryJob {
 
+    /**
+     * 单次派发发件箱的最大条数（避免一次拉取过多导致长任务）
+     */
+    private static final int OUTBOX_BATCH_LIMIT = 200;
+
     @Resource
-    private EsSyncRetryService esRetryService;
+    private EsSyncOutboxService esSyncOutboxService;
     @Resource
-    private TaskService taskService;
-    @Resource
-    private EsUtil esUtil;
-    @Resource
-    private OssAsyncUtil ossAsyncUtil;
+    private TaskEsSyncService taskEsSyncService;
 
     @XxlJob("taskEsRetryJob")
     public void execute() {
-        // 1. 查询任务类型的待重试数据
-        List<EsSyncRetry> list = esRetryService.getWaitRetryList("task");
-        if (list.isEmpty()) {
-            return;
-        }
+        int dispatched = dispatchOutbox();
+        XxlJobHelper.handleSuccess("处理完成，发件箱派发 " + dispatched + " 条");
+    }
 
-        // 2. 逐条重试
-        for (EsSyncRetry retry : list) {
+    /**
+     * 扫描并派发发件箱待同步行；单条失败由派发逻辑内部记为重试，不中断整批。
+     *
+     * @return 本次扫描到的待派发条数
+     */
+    private int dispatchOutbox() {
+        List<EsSyncOutbox> pending = esSyncOutboxService.getWaitList(PrefixConstants.TASK_TYPE, OUTBOX_BATCH_LIMIT);
+        for (EsSyncOutbox row : pending) {
             try {
-                boolean dataExists = true;
-                // 查任务
-                Task task = taskService.getById(retry.getDataId());
-
-                // 判断任务是否存在，不存在则删除 ES 数据
-                if (task == null) {
-                    dataExists = false;
-                } else {
-                    EsDTO esDTO = BeanUtil.copyProperties(task, EsDTO.class);
-                    // 枚举无法自动转 Integer，手动设置状态码（ES 过滤必需）
-                    esDTO.setStatus(task.getStatus() != null ? task.getStatus().getCode() : null);
-                    esUtil.saveTask(esDTO);
-                }
-
-                // 实体不存在：删除 ES 数据 + 异步删除 OSS 文件
-                if (!dataExists) {
-                    esUtil.deleteTask(retry.getDataId());
-                    String fileUrls = retry.getFileUrls();
-                    if (StringUtils.hasText(fileUrls)) {
-                        List<String> fileList = Arrays.asList(fileUrls.split(","));
-                        ossAsyncUtil.deleteFilesAsync(fileList, "task", retry.getDataId());
-                    }
-                }
-
-                // 成功：标记成功
-                esRetryService.markSuccess(retry.getId());
+                taskEsSyncService.dispatch(row.getDataId());
             } catch (Exception e) {
-                // 失败次数+1，超过5次停止
-                esRetryService.incrRetryCount(retry.getId(), e.getMessage());
-                log.error("任务ES重试失败，dataId：{}", retry.getDataId(), e);
+                log.error("任务发件箱派发异常，dataId：{}", row.getDataId(), e);
             }
         }
-
-        XxlJobHelper.handleSuccess("处理完成，共重试 " + list.size() + " 条任务同步记录");
+        return pending.size();
     }
 }

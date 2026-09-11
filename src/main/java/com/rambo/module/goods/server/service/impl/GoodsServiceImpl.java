@@ -19,7 +19,6 @@ import com.rambo.module.chat.enums.MessageType;
 import com.rambo.module.notification.enums.NotificationType;
 import com.rambo.common.enumType.SortDirectionEnum;
 import com.rambo.infrastructure.storage.AliyunOssUtil;
-import com.rambo.infrastructure.storage.OssAsyncUtil;
 import com.rambo.module.goods.enums.GoodsStatus;
 import com.rambo.common.exception.BusinessException;
 import com.rambo.common.context.IdHolder;
@@ -72,9 +71,6 @@ public class GoodsServiceImpl extends ServiceImpl<GoodsMapper, Goods> implements
     private GoodsEsSyncService goodsEsSyncService;
 
     @Resource
-    private OssAsyncUtil ossAsyncUtil;
-
-    @Resource
     private GoodsOrderService orderService;
 
     @Resource
@@ -101,6 +97,7 @@ public class GoodsServiceImpl extends ServiceImpl<GoodsMapper, Goods> implements
      * @param goodsDTO 商品发布DTO
      */
     @Override
+    @Transactional
     @Log(module = OperationModuleEnum.GOODS, targetType = OperationTargetTypeEnum.GOODS,
             targetIdEL = "null",
             action = OperationActionEnum.GOODS_PUBLISH, descriptionEL = "'发布商品'")
@@ -140,6 +137,7 @@ public class GoodsServiceImpl extends ServiceImpl<GoodsMapper, Goods> implements
      * @param goodsDTO 商品更新DTO
      */
     @Override
+    @Transactional
     @Log(module = OperationModuleEnum.GOODS, targetType = OperationTargetTypeEnum.GOODS,
             targetIdEL = "#id",
             action = OperationActionEnum.GOODS_UPDATE, descriptionEL = "'更新商品 id=' + #id")
@@ -181,14 +179,10 @@ public class GoodsServiceImpl extends ServiceImpl<GoodsMapper, Goods> implements
             throw new BusinessException(MessageConstants.SYSTEM_BUSY);
         }
 
-        // 删除旧图片
-        if (StringUtils.hasText(oldImages)) {
-            List<String> oldImagesList = Arrays.asList(oldImages.split(","));
-            ossAsyncUtil.deleteFilesAsync(oldImagesList, PrefixConstants.GOODS_TYPE, id);
-        }
-
-        // 异步同步 ES（失败不影响业务）
-        goodsEsSyncService.syncToEsAsync(goods);
+        // 旧图清理随 ES 同步并入事务性 Outbox：ES 同步达成后删除旧图，失败则整体重试
+        // 仅当本次上传了新图（旧图被替换）时才需清理旧图；未换图时 images 未变，不可删
+        String obsoleteImages = (newImageNames != null && StringUtils.hasText(oldImages)) ? oldImages : null;
+        goodsEsSyncService.updateGoodsEsAsync(goods, obsoleteImages);
     }
 
     /**
@@ -331,6 +325,7 @@ public class GoodsServiceImpl extends ServiceImpl<GoodsMapper, Goods> implements
      * @param id 商品ID
      */
     @Override
+    @Transactional
     @Log(module = OperationModuleEnum.GOODS, targetType = OperationTargetTypeEnum.GOODS,
             targetIdEL = "#id",
             action = OperationActionEnum.GOODS_DELETE, descriptionEL = "'删除商品 id=' + #id")
@@ -339,18 +334,10 @@ public class GoodsServiceImpl extends ServiceImpl<GoodsMapper, Goods> implements
         // 校验商品是否存在并检查用户是否有权限删除商品
         Goods goods = checkGoods(id);
 
-        // 删除商品图片
-        if (StringUtils.hasText(goods.getImages())) {
-            List<String> imageNames = Arrays.asList(goods.getImages().split(","));
-
-            // 异步删除OSS文件
-            ossAsyncUtil.deleteFilesAsync(imageNames, PrefixConstants.GOODS_TYPE, id);
-        }
-
-        // 删除商品信息
+        // 删除商品信息（图片清理随 ES 同步并入 Outbox：ES 删除达成后清理 OSS）
         removeById(id);
 
-        // 异步同步 ES（失败不影响业务）
+        // 异步同步 ES（失败不影响业务），随行登记待清理的商品图片
         goodsEsSyncService.deleteGoodsFromEsAsync(id, goods.getImages());
     }
 

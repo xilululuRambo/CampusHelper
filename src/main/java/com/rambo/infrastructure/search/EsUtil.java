@@ -56,6 +56,26 @@ public class EsUtil {
     }
 
     /**
+     * 根据id删除ES文档（带外部版本号）。
+     * <p>删除同样使用 external version：版本号更大的删除会留下「墓碑」版本，
+     * 使随后到达的、版本更小的旧写入被 ES 以 409 拒绝，避免「已删除的商品被旧事件复活」。</p>
+     *
+     * @param id      文档ID
+     * @param index   索引名
+     * @param version 外部版本号
+     * @throws IOException 异常信息
+     */
+    public void deleteById(Long id, String index, Long version) throws IOException {
+        esClient.delete(d -> {
+            d.index(index).id(id.toString());
+            if (version != null) {
+                d.version(version).versionType(VersionType.External);
+            }
+            return d;
+        });
+    }
+
+    /**
      * 将 ES 响应转换为分页结果（精确 total + 当前页 ID 列表，保持 ES 排序顺序）。
      * 通用基础设施原语：业务模块构造搜索请求后复用本方法完成响应解析。
      */
@@ -85,8 +105,18 @@ public class EsUtil {
         deleteById(id, PrefixConstants.GOODS_INDEX);
     }
 
+    // 商品删除（带外部版本号）
+    public void deleteGoods(Long id, Long version) throws IOException {
+        deleteById(id, PrefixConstants.GOODS_INDEX, version);
+    }
+
     // 任务删除
     public void deleteTask(Long id) throws IOException {
         deleteById(id, PrefixConstants.TASK_INDEX);
+    }
+
+    // 任务删除（带外部版本号）
+    public void deleteTask(Long id, Long version) throws IOException {
+        deleteById(id, PrefixConstants.TASK_INDEX, version);
     }
 }

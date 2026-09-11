@@ -6,7 +6,6 @@ import com.rambo.helper.TestAuthHelper;
 import com.rambo.infrastructure.messaging.RabbitmqProducer;
 import com.rambo.infrastructure.search.EsUtil;
 import com.rambo.infrastructure.storage.AliyunOssUtil;
-import com.rambo.infrastructure.storage.OssAsyncUtil;
 import com.rambo.module.goods.server.service.impl.GoodsEsSearchService;
 import com.rambo.module.goods.server.service.impl.GoodsEsSyncService;
 import com.rambo.module.task.server.service.impl.TaskEsSearchService;
@@ -70,8 +69,6 @@ public abstract class BaseApiTest {
     protected TaskEsSearchService taskEsSearchService;
     @MockBean
     protected AliyunOssUtil aliyunOssUtil;
-    @MockBean
-    protected OssAsyncUtil ossAsyncUtil;
 
     // ==================== 请求构造 ====================
 

@@ -32,6 +32,7 @@ import com.rambo.infrastructure.cache.CacheClient;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.io.IOException;
@@ -62,6 +63,7 @@ public class TaskServiceImpl extends ServiceImpl<TaskMapper, Task> implements Ta
      * @param taskDTO 任务DTO，包含任务信息
      */
     @Override
+    @Transactional
     @Log(module = OperationModuleEnum.TASK, targetType = OperationTargetTypeEnum.TASK,
             targetIdEL = "null", action = OperationActionEnum.TASK_PUBLISH, descriptionEL = "'发布任务'")
     public void publishTask(TaskDTO taskDTO) {
@@ -93,6 +95,7 @@ public class TaskServiceImpl extends ServiceImpl<TaskMapper, Task> implements Ta
      * @param taskDTO 任务DTO，包含任务信息
      */
     @Override
+    @Transactional
     @Log(module = OperationModuleEnum.TASK, targetType = OperationTargetTypeEnum.TASK,
             targetIdEL = "#taskId", action = OperationActionEnum.TASK_UPDATE, descriptionEL = "'更新任务, taskId=' + #taskId")
     public void updateTask(Long taskId, TaskDTO taskDTO) {

@@ -31,3 +31,29 @@ ALTER TABLE t_user ADD COLUMN auth_status TINYINT(1) NOT NULL DEFAULT 0 COMMENT 
 UPDATE t_user SET auth_status = 1, status = 0 WHERE status = 2;
 ALTER TABLE t_user MODIFY COLUMN status TINYINT(1) NOT NULL DEFAULT 0 COMMENT '账号状态：0-正常，1-禁用';
 CREATE INDEX idx_auth_status ON t_user (auth_status);
+
+-- ===== 2026-09-10 ES 同步可靠性改造：新增事务性发件箱表 =====
+-- 业务写库与「同步到 ES 的意图」同事务落库（原子性），异步派发 + XXL-JOB 兜底
+-- 同一 (data_type, data_id) 仅保留一行，后到的意图覆盖先到的，由唯一索引保证合并幂等
+-- file_urls 语义：待清理的 OSS 文件（objectName，逗号分隔），ES 同步达成后清理该列并置空
+CREATE TABLE IF NOT EXISTS t_es_sync_outbox
+(
+    id          bigint auto_increment COMMENT '主键'
+        PRIMARY KEY,
+    data_id     bigint                                NOT NULL COMMENT '业务数据ID（商品ID/任务ID）',
+    data_type   varchar(32)                           NOT NULL COMMENT '数据类型（goods商品、task任务）',
+    op_type     tinyint     DEFAULT 0                 NOT NULL COMMENT '操作类型：0-写入/更新，1-删除',
+    es_version  bigint                                NOT NULL COMMENT 'ES外部版本号（进程内单调递增，防乱序）',
+    file_urls   text                                  NULL COMMENT '待清理的OSS文件（objectName），逗号分隔；ES同步达成后删除并清空',
+    retry_count int         DEFAULT 0                 NOT NULL COMMENT '已重试次数',
+    status      tinyint     DEFAULT 0                 NOT NULL COMMENT '状态：0-待同步 1-同步成功 2-重试失败终止',
+    error_msg   text                                  NULL COMMENT '最后一次失败的错误信息',
+    create_time datetime    DEFAULT CURRENT_TIMESTAMP NOT NULL COMMENT '创建时间',
+    update_time datetime    DEFAULT CURRENT_TIMESTAMP NOT NULL ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    CONSTRAINT uk_data_type_data_id UNIQUE (data_type, data_id)
+) COMMENT 'ES同步发件箱表（事务性Outbox）';
+
+CREATE INDEX idx_outbox_status ON t_es_sync_outbox (status);
+
+-- 路线 B：OSS 清理已并入事务性 Outbox，旧的重试表与两条链路收敛为一张待办表，删除旧表
+DROP TABLE IF EXISTS t_es_sync_retry;

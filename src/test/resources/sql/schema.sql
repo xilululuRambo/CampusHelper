@@ -46,26 +46,27 @@ create index idx_activity_id
 create index idx_user_id
     on t_activity_signup (user_id);
 
-create table t_es_sync_retry
+create table t_es_sync_outbox
 (
     id          bigint auto_increment comment '主键'
         primary key,
-    data_id     varchar(64)                           not null comment '数据ID（如商品ID、用户ID）',
-    data_type   varchar(32)                           not null comment '数据类型（如goods、user）',
-    file_urls   text                                  null comment '关联的文件URL，JSON数组格式',
-    retry_count int         default 0                 null comment '已重试次数',
-    status      varchar(16) default 'PENDING'         null comment '状态：PENDING/SUCCESS/FAILED',
+    data_id     bigint                                not null comment '业务数据ID（商品ID/任务ID）',
+    data_type   varchar(32)                           not null comment '数据类型（goods商品、task任务）',
+    op_type     tinyint     default 0                 not null comment '操作类型：0-写入/更新，1-删除',
+    es_version  bigint                                not null comment 'ES外部版本号（进程内单调递增，防乱序）',
+    file_urls   text                                  null comment '待清理的OSS文件（objectName），逗号分隔；ES同步达成后删除并清空',
+    retry_count int         default 0                 not null comment '已重试次数',
+    status      tinyint     default 0                 not null comment '状态：0-待同步 1-同步成功 2-重试失败终止',
     error_msg   text                                  null comment '最后一次失败的错误信息',
-    create_time datetime    default CURRENT_TIMESTAMP null,
-    update_time datetime    default CURRENT_TIMESTAMP null on update CURRENT_TIMESTAMP
+    create_time datetime    default CURRENT_TIMESTAMP not null comment '创建时间',
+    update_time datetime    default CURRENT_TIMESTAMP not null on update CURRENT_TIMESTAMP comment '更新时间',
+    constraint uk_data_type_data_id
+        unique (data_type, data_id)
 )
-    comment 'ES同步重试记录表';
+    comment 'ES同步发件箱表（事务性Outbox）';
 
-create index idx_data_type
-    on t_es_sync_retry (data_type);
-
-create index idx_status
-    on t_es_sync_retry (status);
+create index idx_outbox_status
+    on t_es_sync_outbox (status);
 
 create table t_goods
 (

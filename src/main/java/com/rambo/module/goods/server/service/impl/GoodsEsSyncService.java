@@ -1,88 +1,102 @@
 package com.rambo.module.goods.server.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
-import co.elastic.clients.elasticsearch._types.ElasticsearchException;
 import com.rambo.common.constants.PrefixConstants;
+import com.rambo.infrastructure.search.AbstractEsOutboxSyncService;
 import com.rambo.infrastructure.search.EsDTO;
-import com.rambo.infrastructure.search.EsSyncRetryService;
 import com.rambo.infrastructure.search.EsUtil;
+import com.rambo.infrastructure.storage.AliyunOssUtil;
 import com.rambo.module.goods.pojo.entity.Goods;
+import com.rambo.module.goods.server.mapper.GoodsMapper;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Executor;
+import java.util.List;
 
 /**
- * 商品 ES 索引同步组件（业务层编排：商品实体 → EsDTO → EsUtil 写入，失败写重试表）。
+ * 商品 ES 索引同步组件（业务层编排：登记 Outbox 意图 → 派发时回源商品 → EsUtil 写入）。
  *
- * <p>由基础设施层 {@code EsAsyncUtil} 拆出并下沉到业务层：商品与任务各自的同步逻辑
- * 本质是业务编排（依赖业务实体 Goods），不属通用能力，归各业务模块所有，
- * 使基础设施层对业务模块保持零依赖。</p>
+ * <p>同步逻辑收敛到基础设施层基类 {@link AbstractEsOutboxSyncService}，本类只负责
+ * 「商品领域」的三件事：数据类型标识、回源加载商品、以及商品索引的读写原语。
+ * 由于回源用 {@link GoodsMapper}（而非 GoodsService），避免了与 GoodsServiceImpl 的循环依赖。</p>
  */
 @Component
 @Slf4j
-public class GoodsEsSyncService {
+public class GoodsEsSyncService extends AbstractEsOutboxSyncService {
+
     @Resource
-    private EsSyncRetryService esSyncRetryService;
+    private GoodsMapper goodsMapper;
 
     @Resource
     private EsUtil esUtil;
 
-    /**
-     * 统一异步线程池（AsyncConfig 的 taskExecutor）：
-     * 替代 CompletableFuture 默认的 ForkJoinPool.commonPool——后者丢失 MDC traceId 且可被
-     * 并行流/其他任务饱和；taskExecutor 带 MDC 装饰器，可完整透传日志链路。
-     */
-    @Resource(name = "taskExecutor")
-    private Executor taskExecutor;
+    @Resource
+    private AliyunOssUtil aliyunOssUtil;
+
+    @Override
+    protected String dataType() {
+        return PrefixConstants.GOODS_TYPE;
+    }
+
+    @Override
+    protected EsDTO loadEsDTO(Long dataId) {
+        // 逻辑删除的商品 selectById 返回 null（@TableLogic 自动过滤），此处即「已删除」信号
+        Goods goods = goodsMapper.selectById(dataId);
+        if (goods == null) {
+            return null;
+        }
+        EsDTO esDTO = BeanUtil.copyProperties(goods, EsDTO.class);
+        // 枚举无法自动转 Integer，手动设置状态码（ES 过滤必需）
+        esDTO.setStatus(goods.getStatus() != null ? goods.getStatus().getCode() : null);
+        return esDTO;
+    }
+
+    @Override
+    protected void saveEsDoc(EsDTO esDTO) throws Exception {
+        esUtil.saveGoods(esDTO);
+    }
+
+    @Override
+    protected void deleteEsDoc(Long dataId, long version) throws Exception {
+        esUtil.deleteGoods(dataId, version);
+    }
 
     /**
-     * 异步同步商品到ES
+     * 覆写外部文件清理：ES 同步达成后删除随行登记的商品图片（旧图/删除图）。
+     * <p>OSS 删除失败会抛 {@code BusinessException}，由基类捕获并交由 Outbox 重试。</p>
+     */
+    @Override
+    protected void deleteExternalFiles(List<String> fileUrls) throws Exception {
+        if (fileUrls == null || fileUrls.isEmpty()) {
+            return;
+        }
+        aliyunOssUtil.deleteFiles(fileUrls);
+    }
+
+    /**
+     * 登记商品「写入/更新」意图（发布场景无待清理文件）。
      *
      * @param goods 商品实体类
      */
     public void syncToEsAsync(Goods goods) {
-        // 版本号必须在调用线程（业务线程）取值：异步线程内的 System.currentTimeMillis()
-        // 无法反映业务事件发生顺序，乱序执行时旧任务的时间戳反而更大，会覆盖新数据
-        long version = System.currentTimeMillis();
-        CompletableFuture.runAsync(() -> {
-            try {
-                EsDTO esDTO = BeanUtil.copyProperties(goods, EsDTO.class);
-                // 枚举无法自动转 Integer，手动设置状态码（ES 过滤必需）
-                esDTO.setStatus(goods.getStatus() != null ? goods.getStatus().getCode() : null);
-                esDTO.setUpdateTime(version);
-                esUtil.saveGoods(esDTO);
-            } catch (ElasticsearchException e) {
-                if (e.status() == 409) {
-                    // 外部版本冲突：本次为旧版本数据，ES 已拒绝覆盖（防乱序的预期行为），忽略即可
-                    log.debug("ES 版本冲突（旧数据），忽略覆盖 goodsId={}, version={}", goods.getId(), version);
-                } else {
-                    log.error("ES 索引失败，goodsId={}，等待定时任务补偿", goods.getId(), e);
-                    esSyncRetryService.addRetry(goods.getId(), PrefixConstants.GOODS_TYPE, goods.getImages(), e.getMessage());
-                }
-            } catch (Exception e) {
-                // 覆盖 IOException 之外的所有异常（序列化失败/连接层 RuntimeException 等），
-                // 修复原实现"只 catch IOException 导致异常静默穿透、重试表永远不写"的问题
-                log.error("ES 索引失败，goodsId={}，等待定时任务补偿", goods.getId(), e);
-                esSyncRetryService.addRetry(goods.getId(), PrefixConstants.GOODS_TYPE, goods.getImages(), e.getMessage());
-            }
-        }, taskExecutor);
+        enqueueUpsert(goods.getId(), null);
     }
 
     /**
-     * 异步删除商品ES
+     * 登记商品「写入/更新」意图，并随行登记被替换的旧图（ES 同步达成后清理 OSS）。
+     *
+     * @param goods          商品实体类
+     * @param obsoleteImages 本次更新后被替换的旧图（逗号分隔），无则为 null
+     */
+    public void updateGoodsEsAsync(Goods goods, String obsoleteImages) {
+        enqueueUpsert(goods.getId(), obsoleteImages);
+    }
+
+    /**
+     * 登记商品「删除」意图，并随行登记商品图片（ES 删除达成后清理 OSS）。
      */
     public void deleteGoodsFromEsAsync(Long goodsId, String images) {
-        CompletableFuture.runAsync(() -> {
-            try {
-                esUtil.deleteGoods(goodsId);
-            } catch (Exception e) {
-                log.error("ES商品删除失败 id:{}", goodsId, e);
-                // 失败写入重试表
-                esSyncRetryService.addRetry(goodsId, PrefixConstants.GOODS_TYPE, images, e.getMessage());
-            }
-        }, taskExecutor);
+        enqueueDelete(goodsId, images);
     }
 }
