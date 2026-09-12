@@ -20,6 +20,8 @@ import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 
+import java.util.Objects;
+
 @RestControllerAdvice
 @Slf4j
 public class GlobalExceptionHandler {
@@ -33,7 +35,7 @@ public class GlobalExceptionHandler {
      */
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public Result<?> handleMethodArgumentNotValidException(MethodArgumentNotValidException e) {
-        String message = e.getBindingResult().getFieldError().getDefaultMessage();
+        String message = Objects.requireNonNull(e.getBindingResult().getFieldError()).getDefaultMessage();
         log.error("参数校验失败：{}", message);
         return Result.fail(CodeConstants.PARAM_ERROR, message);
     }

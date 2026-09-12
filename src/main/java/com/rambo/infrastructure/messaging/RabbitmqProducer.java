@@ -10,6 +10,7 @@ import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Component;
 
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.BiConsumer;
@@ -82,17 +83,34 @@ public class RabbitmqProducer {
                     // 超时兜底：确认迟迟未回（如网络挂起）时以 TimeoutException 异常完成，走失败回调；
                     // 若消息实际已送达，由消费端幂等（existsByMessageId）保证不重复处理
                     .orTimeout(CONFIRM_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-                    .thenAccept(confirm -> confirmCallback.accept(confirm.isAck(), confirm.getReason()))
-                    .exceptionally(ex -> {
-                        // 结果不确定（超时/网络异常导致 future 异常完成），按失败回调，防止消息静默丢失
-                        String reason = ex instanceof TimeoutException
+                    .whenComplete((confirm, ex) -> {
+                        if (ex == null) {
+                            notifyConfirm(confirmCallback, confirm.isAck(), confirm.getReason());
+                            return;
+                        }
+                        // 结果不确定（超时/网络异常导致 future 异常完成），按失败回调，防止消息静默丢失；
+                        // 异常可能被包成 CompletionException（经依赖阶段传播），解包后再判断超时类型
+                        Throwable cause = ex instanceof CompletionException && ex.getCause() != null ? ex.getCause() : ex;
+                        String reason = cause instanceof TimeoutException
                                 ? "发送确认超时(" + CONFIRM_TIMEOUT_MS / 1000 + "s)"
-                                : "发送确认异常: " + ex.getMessage();
-                        confirmCallback.accept(false, reason);
-                        return null;
+                                : "发送确认异常: " + cause.getMessage();
+                        notifyConfirm(confirmCallback, false, reason);
                     });
         }
 
         rabbitTemplate.convertAndSend(exchange, routingKey, payload, postProcessor, correlationData);
+    }
+
+    /**
+     * 安全执行确认回调：回调内部异常只记日志、不外抛。
+     * 异常一旦外抛会沿 future 链传播（旧实现 thenAccept 抛异常会流入 exceptionally），
+     * 造成确认回调被二次触发（如 ack 后又收到 false）。
+     */
+    private void notifyConfirm(BiConsumer<Boolean, String> confirmCallback, boolean ack, String reason) {
+        try {
+            confirmCallback.accept(ack, reason);
+        } catch (Exception e) {
+            log.error("发布确认回调执行异常: ack={}, reason={}", ack, reason, e);
+        }
     }
 }
