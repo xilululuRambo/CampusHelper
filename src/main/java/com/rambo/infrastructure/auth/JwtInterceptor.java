@@ -106,11 +106,16 @@ public class JwtInterceptor implements HandlerInterceptor {
             // 将 accessToken 存入 ThreadLocal，供 logout 等场景使用
             AccessTokenHolder.setToken(accessToken);
 
-            // 用户活跃时续期该设备 field 的过期时间（RMapCache 原生支持 field 级 TTL）
+            // 用户活跃时续期该设备 field 的过期时间（RMapCache 原生支持 field 级 TTL）；
+            // 阈值节流：仅当剩余不足窗口一半时才续写——滑动语义不变，写放大从「每请求一次」
+            // 降为「每半窗口最多一次」；负值（字段不存在）不续，会话已结束不复活
             String userTokensKey = PrefixConstants.USER_TOKENS + id;
-            String currentRt = cacheClient.mapGet(userTokensKey, deviceId);
-            if (currentRt != null) {
-                cacheClient.mapPut(userTokensKey, deviceId, currentRt, jwtProperties.getRefreshExpiration(), TimeUnit.MILLISECONDS);
+            long remainMs = cacheClient.mapRemainTtl(userTokensKey, deviceId);
+            if (remainMs >= 0 && remainMs < jwtProperties.getRefreshExpiration() / 2) {
+                String currentRt = cacheClient.mapGet(userTokensKey, deviceId);
+                if (currentRt != null) {
+                    cacheClient.mapPut(userTokensKey, deviceId, currentRt, jwtProperties.getRefreshExpiration(), TimeUnit.MILLISECONDS);
+                }
             }
 
             //  将用户ID设置到ThreadLocal中

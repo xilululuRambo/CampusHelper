@@ -207,6 +207,13 @@
             <artifactId>spring-boot-starter-websocket</artifactId>
         </dependency>
 
+        <!-- Reactor Netty：STOMP broker relay（relay 模式连 RabbitMQ STOMP 插件）必需的 TCP 客户端，
+             starter-websocket 不含；缺失时启动报 No compatible version of Reactor Netty -->
+        <dependency>
+            <groupId>io.projectreactor.netty</groupId>
+            <artifactId>reactor-netty-http</artifactId>
+        </dependency>
+
         <!-- MongoDB 数据库 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

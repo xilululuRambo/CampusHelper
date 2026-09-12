@@ -147,6 +147,15 @@ public class CacheClient {
     }
 
     /**
+     * 读取 Map 字段的剩余过期时间（毫秒）；字段不存在返回 -2（Redis TTL 语义）。
+     * 供「窗口过半才续期」的阈值节流使用：把每请求的带 TTL 重写降为每半窗口最多一次。
+     */
+    public long mapRemainTtl(String key, String field) {
+        RMapCache<String, String> map = redissonClient.getMapCache(key);
+        return map.remainTimeToLive(field);
+    }
+
+    /**
      * 写入 Map 字段并指定 <b>field 级过期时间</b>（多设备会话、各自独立续期场景）。
      */
     public void mapPut(String key, String field, String value, long ttl, TimeUnit unit) {
