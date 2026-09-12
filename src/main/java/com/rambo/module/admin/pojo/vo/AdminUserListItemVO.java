@@ -30,7 +30,7 @@ public class AdminUserListItemVO implements Serializable {
     @Schema(description = "学生ID")
     private String studentId;
 
-    @Schema(description = "头像URL")
+    @Schema(description = "头像 OSS 对象名")
     private String avatar;
 
     @Schema(description = "账号状态：0-正常，1-禁用")

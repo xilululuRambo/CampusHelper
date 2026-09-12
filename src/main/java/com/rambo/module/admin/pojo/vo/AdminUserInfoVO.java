@@ -22,7 +22,7 @@ public class AdminUserInfoVO{
     @Schema(description = "学生ID")
     private String studentId;
 
-    @Schema(description = "头像URL")
+    @Schema(description = "头像 OSS 对象名")
     private String avatar;
 
     @Schema(description = "用户名")

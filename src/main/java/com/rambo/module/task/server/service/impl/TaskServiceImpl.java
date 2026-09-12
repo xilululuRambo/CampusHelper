@@ -427,7 +427,7 @@ public class TaskServiceImpl extends ServiceImpl<TaskMapper, Task> implements Ta
     }
 
     /**
-     * 详细地址脱敏：末尾门牌号用 ** 覆盖（如 "3号楼502室" → "3号楼5**"），短地址全量打码。
+     * 详细地址脱敏：末尾门牌号用 ** 覆盖（如 "3号楼502室" → "3号楼50**"），短地址全量打码。
      */
     private String maskDetail(String detail) {
         if (detail == null || detail.isEmpty()) {

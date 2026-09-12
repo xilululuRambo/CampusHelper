@@ -15,7 +15,7 @@ import java.io.Serializable;
 import java.time.LocalDateTime;
 
 /**
- * 操作日志实体（横切关注点数据载体，随操作日志体系下沉至 common 层）
+ * 操作日志实体（横切关注点数据载体）
  */
 @Data
 @Builder

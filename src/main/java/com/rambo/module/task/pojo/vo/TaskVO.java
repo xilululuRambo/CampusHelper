@@ -45,7 +45,7 @@ public class TaskVO implements Serializable {
     @Schema(description = "任务地址ID")
     private Long addressId;
 
-    @Schema(description = "任务状态：0-待接单 2-进行中 3-待确认 4-已完成 5-已取消")
+    @Schema(description = "任务状态：0-待接单 1-进行中 2-待确认 3-已完成 4-已取消")
     private Integer status;
 
     @Schema(description = "接单者用户ID")

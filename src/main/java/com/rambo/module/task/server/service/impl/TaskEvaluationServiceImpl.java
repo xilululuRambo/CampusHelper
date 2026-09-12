@@ -86,7 +86,7 @@ public class TaskEvaluationServiceImpl extends ServiceImpl<TaskEvaluationMapper,
                 ? order.getReceiverId()
                 : order.getPublisherId();
 
-        // 2. 检查是否已评价过该订单
+        // 5. 检查是否已评价过该订单
         boolean existed = lambdaQuery()
                 .eq(TaskEvaluation::getOrderId, evaluationDTO.getOrderId())
                 .eq(TaskEvaluation::getFromUid, currentUserId)
@@ -95,7 +95,7 @@ public class TaskEvaluationServiceImpl extends ServiceImpl<TaskEvaluationMapper,
             throw new BusinessException(MessageConstants.EVALUATION_EXISTED);
         }
 
-        // 5. 保存评价
+        // 6. 保存评价
         TaskEvaluation taskEvaluation = new TaskEvaluation();
         taskEvaluation.setOrderId(evaluationDTO.getOrderId());
         taskEvaluation.setFromUid(currentUserId);

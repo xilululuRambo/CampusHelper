@@ -57,3 +57,18 @@ CREATE INDEX idx_outbox_status ON t_es_sync_outbox (status);
 
 -- 路线 B：OSS 清理已并入事务性 Outbox，旧的重试表与两条链路收敛为一张待办表，删除旧表
 DROP TABLE IF EXISTS t_es_sync_retry;
+
+-- ===== 2026-09-12 注释/DDL 审查修正：补并发防重唯一索引 + 列注释订正 =====
+-- ⑤ t_goods_evaluation (order_id, from_uid) 唯一索引：同订单同人防并发重复评价
+--    （GoodsEvaluationServiceImpl 捕获 DuplicateKeyException 兜底依赖此索引；存量若有重复数据需先清理）
+ALTER TABLE t_goods_evaluation ADD CONSTRAINT uk_order_from UNIQUE (order_id, from_uid);
+
+-- ⑥ t_notification_retry.message_id 唯一索引：生产者 nack 回调与消费者失败写重试表并发时幂等去重
+--    （NotificationRetryServiceImpl.saveIfFail 捕获 DuplicateKeyException 兜底依赖此索引；存量若有重复数据需先清理）
+ALTER TABLE t_notification_retry ADD CONSTRAINT uk_message_id UNIQUE (message_id);
+
+-- ⑦ 评分列注释订正：业务校验范围为 1-5（原 0-5 与校验矛盾）
+ALTER TABLE t_goods_evaluation MODIFY COLUMN score tinyint NOT NULL COMMENT '评价分数（1-5）';
+
+-- ⑧ 任务申请状态列注释订正：补 3-已完成、4-已取消（与 TaskApplyStatus 枚举对齐）
+ALTER TABLE t_task_application MODIFY COLUMN status tinyint(1) DEFAULT 0 NOT NULL COMMENT '0-待处理 1-已接受 2-已拒绝 3-已完成 4-已取消';

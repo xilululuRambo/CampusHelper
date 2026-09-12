@@ -43,7 +43,7 @@ public class AddressServiceImpl extends ServiceImpl<AddressMapper, Address> impl
 
         // 从线程本地获取用户ID
         Long userId = IdHolder.getId();
-        // 最多只能保存3个地址，默认地址只能有一个，默认地址不能删除
+        // 最多只能保存3个地址，默认地址只能有一个
         if (lambdaQuery().eq(Address::getUserId, userId).count() >= NumConstants.ADDRESS_MAX_COUNT) {
             throw new BusinessException(MessageConstants.ADDRESS_MAX_COUNT);
         }

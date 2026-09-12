@@ -76,7 +76,7 @@ create table t_goods
     title       varchar(200)                       not null comment '商品标题',
     description text                               null comment '商品描述',
     price       bigint                             not null comment '商品价格 单位：分',
-    images      varchar(2000)                      not null comment '商品图片URL，多张用逗号分隔',
+    images      varchar(2000)                      not null comment '商品图片 OSS 对象名，多张用逗号分隔',
     status      tinyint  default 0                 not null comment '商品状态：0-在售 1-交易中 2-下架  3-已售出',
     admin_disabled tinyint default 0               not null comment '管理员强制下架标记：0-正常 1-管理员下架（商家不可自行恢复）',
     create_time datetime default CURRENT_TIMESTAMP not null comment '创建时间',
@@ -122,9 +122,11 @@ create table t_goods_evaluation
     order_id    bigint                             not null comment '商品订单ID',
     from_uid    bigint                             not null comment '评价人用户ID',
     to_uid      bigint                             not null comment '被评价人用户ID',
-    score       tinyint                            not null comment '评价分数（0-5）',
+    score       tinyint                            not null comment '评价分数（1-5）',
     content     varchar(1000)                      null comment '评价内容',
-    create_time datetime default CURRENT_TIMESTAMP not null comment '评价时间'
+    create_time datetime default CURRENT_TIMESTAMP not null comment '评价时间',
+    constraint uk_order_from
+        unique (order_id, from_uid)
 )
     comment '商品评价表';
 
@@ -243,7 +245,9 @@ create table t_notification_retry
     retry_count   int        default 0 not null comment '重试次数',
     error_message varchar(500)         not null comment '错误信息',
     create_time   datetime             not null comment '创建时间',
-    update_time   datetime             not null comment '更新时间'
+    update_time   datetime             not null comment '更新时间',
+    constraint uk_message_id
+        unique (message_id)
 )
     comment '通知重试表';
 
@@ -282,7 +286,7 @@ create table t_user
     phone        varchar(11)                          null comment '手机号',
     real_name    varchar(20)                          null comment '真实姓名',
     student_id   varchar(32)                          null comment '学号',
-    avatar       varchar(255)                         null comment '头像URL',
+    avatar       varchar(255)                         null comment '头像 OSS 对象名',
     username     varchar(15)                          not null comment '用户名',
     points       int        default 0                 not null comment '积分',
     credit_score int        default 80                not null comment '信誉分',
@@ -407,7 +411,7 @@ create table t_task_application
     task_id           bigint unsigned                      not null comment '任务ID',
     applicant_id      bigint unsigned                      not null comment '申请人ID',
     reason            varchar(255)                         not null comment '申请理由',
-    status            tinyint(1) default 0                 not null comment '0-待处理 1-已接受 2-已拒绝 3-已完成',
+    status            tinyint(1) default 0                 not null comment '0-待处理 1-已接受 2-已拒绝 3-已完成 4-已取消',
     complete_evidence varchar(255)                         null comment '完成凭证',
     complete_time     datetime                             null comment '完成时间',
     create_time       datetime   default CURRENT_TIMESTAMP not null comment '创建时间',

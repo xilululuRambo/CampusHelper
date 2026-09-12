@@ -35,7 +35,7 @@ public class Goods implements Serializable {
     @Schema(description = "价格（分）")
     private Long price;
 
-    @Schema(description = "商品图片URL，多张用逗号分隔")
+    @Schema(description = "商品图片 OSS 对象名，多张用逗号分隔")
     private String images;
 
     @Schema(description = "商品状态：0-在售，1-交易中，2-下架，3-已售出")

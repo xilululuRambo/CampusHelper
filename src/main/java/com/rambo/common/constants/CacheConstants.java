@@ -13,7 +13,7 @@ public final class CacheConstants {
     public static final String ADDRESS_LIST = "address:list";    // 地址列表（按用户）
 
     //===================== 任务分类 =====================
-    public static final String TASK_CATEGORY_ALL = "task:category:all";    // 所有分类名称（按用户）
+    public static final String TASK_CATEGORY_ALL = "task:category:all";    // 所有分类名称（全局共享，无用户维度）
 
     //===================== 任务评价 =====================
     public static final String TASK_EVALUATION = "task:evaluation";    // 任务评价列表（按订单ID）

@@ -28,7 +28,7 @@ public class GoodsEvaluation implements Serializable {
     @Schema(description = "商品被评价人用户ID")
     private Long toUid;
 
-    @Schema(description = "商品评价分数 （0-5）")
+    @Schema(description = "商品评价分数（1-5）")
     private Integer score;
 
     @Schema(description = "商品评价内容")

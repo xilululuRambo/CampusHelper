@@ -10,7 +10,7 @@ public class EnumConstants {
     public static final String USER_AUTH_UNVERIFIED = "未认证";
     public static final String USER_AUTH_VERIFIED = "已认证";
 
-    // 0-待接受 2-进行中 3-待确认完成 4-已完成 5-已取消
+    // 0-待接单 1-进行中 2-待确认 3-已完成 4-已取消
     //任务状态
     public static final String PENDING = "待接受";
     public static final String IN_PROGRESS = "进行中";
@@ -18,7 +18,7 @@ public class EnumConstants {
     public static final String COMPLETED = "已完成";
     public static final String CANCELLED = "已取消";
 
-    // 0-待处理 1-已接受 2-已拒绝
+    // 0-待处理 1-已接受 2-已拒绝 3-已完成 4-已取消
     // 任务申请状态
     public static final String PENDING_APPLICATION = "待处理";
     public static final String ACCEPTED_APPLICATION = "已接受";

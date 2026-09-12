@@ -30,6 +30,6 @@ public class GoodsListVO implements Serializable {
     @OssUrl
     private String images;
 
-    @Schema(description = "商品状态：0-在售，1-下架，2-已售出")
+    @Schema(description = "商品状态：0-在售，1-交易中，2-下架，3-已售出")
     private GoodsStatus status;
 }

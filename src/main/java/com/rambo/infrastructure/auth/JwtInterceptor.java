@@ -77,7 +77,7 @@ public class JwtInterceptor implements HandlerInterceptor {
                     return true;
                 }
                 // 账号状态校验：被禁用管理员即使 AT 未过期/未进黑名单也立即拒绝。
-                // AT 是无状态 JWT，禁用时无法逐个拉黑，靠管理端 updateInfo/disable 写入的禁用标记兜底
+                // AT 是无状态 JWT，禁用时无法逐个拉黑，靠管理端 updateInfo 改为禁用时写入的禁用标记兜底
                 // （与用户侧 USER_DISABLED 语义对齐，避免"禁用只删 RT、AT 仍有效"的漏洞）
                 if (cacheClient.hasKey(PrefixConstants.ADMIN_DISABLED + id)) {
                     throw new BusinessException(MessageConstants.ADMIN_DISABLED);
@@ -157,7 +157,7 @@ public class JwtInterceptor implements HandlerInterceptor {
                             return true;
                         }
 
-                        // 生成新的双 token，必须保留原管理员角色，否则超级管理员刷新后会会被……降级被当作普通用户解析
+                        // 生成新的双 token，必须保留原管理员角色，否则超级管理员刷新后会被降级为普通用户解析
                         Map<String, Object> adminClaims = new HashMap<>();
                         adminClaims.put("id", adminId);
                         adminClaims.put("role", e.getClaims().get("role"));
@@ -205,7 +205,7 @@ public class JwtInterceptor implements HandlerInterceptor {
                 throw new BusinessException(MessageConstants.USER_DISABLED);
             }
 
-            // 3. 加锁，防止并发刷新
+            // 加锁，防止并发刷新
             String lockKey = PrefixConstants.REFRESH_LOCK + id;
             try {
                 // 尝试加锁，等待 500 毫秒，锁持有 3000 毫秒后自动释放（防止死锁）
@@ -228,9 +228,11 @@ public class JwtInterceptor implements HandlerInterceptor {
                     cacheClient.mapRemove(userTokensKey, deviceId);
                     return true;
                 }
-                // 生成新的 accessToken + Refresh Token（RT Rotation）
+                // 生成新的 accessToken + Refresh Token（RT Rotation）；必须携带 deviceId，
+                // 否则新 AT 的后续请求在设备维度处理（会话续期/设备踢出）时解析失败，新 RT 亦无法再次刷新
                 Map<String, Object> map = new HashMap<>();
                 map.put("id", id);
+                map.put("deviceId", deviceId);
                 accessToken = jwtUtil.createAccessToken(map);
                 String newRefreshToken = jwtUtil.createRefreshToken(map);
 
@@ -251,8 +253,9 @@ public class JwtInterceptor implements HandlerInterceptor {
                 lockClient.unlock(lockKey);
             }
         } catch (JwtException | IllegalArgumentException e) {
-            // token 伪造/损坏/空：不给刷新机会，明确返回 401
-            // （ExpiredJwtException 已在上方单独处理，能走到这里说明 token 根本不可信）
+            // token 伪造/损坏/空：不给刷新机会，直接抛未授权业务异常拒绝
+            // （ExpiredJwtException 已在上方单独处理，能走到这里说明 token 根本不可信；
+            //  单参构造 code=500，经全局异常处理器包装为 HTTP 200 + body.code=500，并非 HTTP 401）
             throw new BusinessException(MessageConstants.UNAUTHORIZED);
         }
     }

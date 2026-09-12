@@ -211,7 +211,7 @@ public class GoodsOrderServiceImpl extends ServiceImpl<GoodsOrderMapper, GoodsOr
             throw new BusinessException(MessageConstants.GOODS_ORDER_STATUS_ERROR);
         }
 
-        // 5. 更新订单状态为已发货
+        // 更新订单状态为已发货
         boolean isSuccess = lambdaUpdate()
                 .eq(GoodsOrder::getId, orderId)
                 .eq(GoodsOrder::getOrderStatus, GoodsOrderStatus.PENDING_SHIP)
@@ -222,7 +222,7 @@ public class GoodsOrderServiceImpl extends ServiceImpl<GoodsOrderMapper, GoodsOr
             throw new BusinessException(MessageConstants.GOODS_ORDER_DELIVERY_ERROR);
         }
 
-        // 6. 发送订单发货成功消息
+        // 发送订单发货成功消息
         notificationSender.sendAsync(NotificationMessage.builder()
                 .userId(goodsOrder.getBuyerId())
                 .type(NotificationType.GOODS_DELIVER)

@@ -122,7 +122,7 @@ public class AdminUserServiceImpl implements AdminUserService {
                 .update();
 
         // 会话失效处理：
-        // 1. 删除该用户全部设备的 Refresh Token（RT 无状态，删 Hash 即全设备踢下线）
+        // 1. 删除该用户全部设备的 Refresh Token（RT 有状态：按设备存于 Redis Hash，删 Hash 即全设备踢下线）
         // 2. 写入账号禁用标记：AT 是无状态 JWT 且服务端不知其值，无法逐个拉黑；
         //    标记由 JwtInterceptor 每次请求校验，保证禁用立即生效（即使 AT 未过期）
         if (UserStatus.DISABLED.equals(status)) {
@@ -331,7 +331,7 @@ public class AdminUserServiceImpl implements AdminUserService {
         //校验用户存在
         getUserById(id);
 
-        //删除该用户全部设备的 Refresh Token（RT 无状态，删 Hash 即全设备踢下线）；
+        //删除该用户全部设备的 Refresh Token（RT 有状态：按设备存于 Redis Hash，删 Hash 即全设备踢下线）；
         //AT 为无状态 JWT 服务端无法逐个拉黑，最长存活至过期，过期后无法续期被迫重新登录
         cacheClient.delete(PrefixConstants.USER_TOKENS + id);
         log.info("管理员 {} 强制下线用户 {}", IdHolder.getId(), id);

@@ -67,7 +67,7 @@ public class TaskWorkflowServiceImpl implements TaskWorkflowService {
     private CacheClient cacheClient;
 
     /**
-     * 申请任务（编排层：校验任务 + 锁 + 创建申请）
+     * 申请任务（编排层：校验任务 + 创建申请；并发防重由防重复注解与唯一索引兜底）
      *
      * @param taskId 任务ID
      * @param reason 申请原因

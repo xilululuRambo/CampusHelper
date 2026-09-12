@@ -28,7 +28,7 @@ public class TaskEvaluation implements Serializable {
     @Schema(description = "任务被评价人用户ID")
     private Long toUid;
 
-    @Schema(description = "任务评价分数 （0-5）")
+    @Schema(description = "任务评价分数（1-5）")
     private Integer score;
 
     @Schema(description = "任务评价内容")

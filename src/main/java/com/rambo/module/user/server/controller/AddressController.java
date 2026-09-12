@@ -59,7 +59,8 @@ public class AddressController {
     /**
      * 更新用户地址
      *
-     * @param addressId 地址请求参数DTO
+     * @param addressId  地址ID
+     * @param addressDTO 地址请求参数DTO
      * @return 成功结果VO
      */
     @NoAuthAnnotation

@@ -26,7 +26,7 @@ public class AdminGoodsEvaluationVO implements Serializable {
     @Schema(description = "被评价人用户ID")
     private Long toUid;
 
-    @Schema(description = "评分（0-5）")
+    @Schema(description = "评分（1-5）")
     private Integer score;
 
     @Schema(description = "评价内容")

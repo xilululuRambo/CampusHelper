@@ -118,7 +118,8 @@ public class UserController {
     /**
      * 更新用户信息
      *
-     * @param username avatar 更新用户信息请求参数
+     * @param username 用户名（可选）
+     * @param avatar   头像文件（可选）
      * @return 更新成功返回成功结果
      */
     @PutMapping
