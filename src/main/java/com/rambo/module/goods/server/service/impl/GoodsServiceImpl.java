@@ -192,6 +192,7 @@ public class GoodsServiceImpl extends ServiceImpl<GoodsMapper, Goods> implements
      * @param goodsStatus 商品状态
      */
     @Override
+    @Transactional
     @Log(module = OperationModuleEnum.GOODS, targetType = OperationTargetTypeEnum.GOODS,
             targetIdEL = "#id",
             action = OperationActionEnum.GOODS_STATUS_UPDATE, descriptionEL = "'更新商品状态 id=' + #id")
@@ -217,6 +218,11 @@ public class GoodsServiceImpl extends ServiceImpl<GoodsMapper, Goods> implements
         if (!isSuccess) {
             throw new BusinessException(MessageConstants.SYSTEM_BUSY);
         }
+
+        // 商品状态已变更（NORMAL <-> DISABLED）：事务内登记 ES 同步意图，与业务写库同事务原子落库。
+        // 补齐背景：ES 同步原先只覆盖"发布/编辑/删除"，一切"流转导致的状态变更"均被遗漏，
+        // 表现为商品已下架但搜索页仍能搜到、点进去才被状态校验拒绝。
+        goodsEsSyncService.syncToEsAsync(goods);
     }
 
     /**
@@ -228,6 +234,7 @@ public class GoodsServiceImpl extends ServiceImpl<GoodsMapper, Goods> implements
      * @param goodsStatus 目标状态（管理员操作：NORMAL-恢复在售 / DISABLED-强制下架）
      */
     @Override
+    @Transactional
     @Log(module = OperationModuleEnum.GOODS, targetType = OperationTargetTypeEnum.GOODS,
             targetIdEL = "#id",
             action = OperationActionEnum.GOODS_STATUS_UPDATE_BY_ADMIN, descriptionEL = "'管理员更新商品状态 id=' + #id")
@@ -274,6 +281,10 @@ public class GoodsServiceImpl extends ServiceImpl<GoodsMapper, Goods> implements
                     .refId(id)
                     .build());
         }
+
+        // 商品状态已变更（NORMAL <-> DISABLED）：事务内登记 ES 同步意图。
+        // 管理员下架的商品必须立即从搜索结果中消失，否则用户搜到后点进详情立刻被状态校验拒绝。
+        goodsEsSyncService.syncToEsAsync(goods);
     }
 
     /**
@@ -477,6 +488,10 @@ public class GoodsServiceImpl extends ServiceImpl<GoodsMapper, Goods> implements
             if (!isSuccess) {
                 throw new BusinessException(MessageConstants.GOODS_BUYED);
             }
+
+            // 商品状态已变更（NORMAL -> TRADING）：事务内登记 ES 同步意图。
+            // 交易中的商品必须立即从搜索结果中消失，否则第二个买家搜到后点击购买会被 GOODS_STATUS_IS_INVALID 拒绝
+            goodsEsSyncService.syncToEsAsync(goods);
 
             // 下单订单
             GoodsOrderDTO goodsOrderDTO = new GoodsOrderDTO();

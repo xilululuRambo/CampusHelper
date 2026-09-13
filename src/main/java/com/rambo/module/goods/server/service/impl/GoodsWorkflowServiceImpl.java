@@ -48,6 +48,8 @@ public class GoodsWorkflowServiceImpl implements GoodsWorkflowService {
     private ChatSessionService chatSessionService;
     @Resource
     private UserService userService;
+    @Resource
+    private GoodsEsSyncService goodsEsSyncService;
 
     /**
      * 确认收货订单完成
@@ -99,6 +101,8 @@ public class GoodsWorkflowServiceImpl implements GoodsWorkflowService {
         }
         // 商品状态已变更（CAS 直改绕过 @CacheEvict 业务方法）：显式失效详情缓存，防止残留旧状态
         goodsService.evictGoodsDetail(goodsOrder.getGoodsId());
+        // 商品状态已变更（TRADING -> SOLD_OUT）：事务内登记 ES 同步意图，已售出的商品不应再出现在搜索结果
+        goodsEsSyncService.syncToEsAsync(goodsOrder.getGoodsId());
 
         // 发送订单确认收货成功消息
         // 1. 通知买家订单已完成
@@ -176,6 +180,8 @@ public class GoodsWorkflowServiceImpl implements GoodsWorkflowService {
                 if (!updated) {
                     throw new BusinessException(MessageConstants.GOODS_ORDER_CANCEL_ERROR);
                 }
+                // 商品状态已变更（TRADING -> NORMAL）：事务内登记 ES 同步意图，取消后应重新可被搜到
+                goodsEsSyncService.syncToEsAsync(goods);
             }
 
             // 结束会话（订单取消，买卖双方沟通终止；事务提交后关闭，回滚则会话保持打开）

@@ -84,6 +84,18 @@ public class GoodsEsSyncService extends AbstractEsOutboxSyncService {
     }
 
     /**
+     * 登记商品「写入/更新」意图（只持有商品 ID 的调用方使用，避免为了拿到实体多查一次库）。
+     *
+     * <p>发件箱只记录 {@code dataId}，派发时由 {@link #loadEsDTO(Long)} 回源加载最新商品，
+     * 因此调用方无需提供实体快照。适用于「状态由 CAS 直改、当前线程未持有实体」的流转场景。</p>
+     *
+     * @param goodsId 商品ID
+     */
+    public void syncToEsAsync(Long goodsId) {
+        enqueueUpsert(goodsId, null);
+    }
+
+    /**
      * 登记商品「写入/更新」意图，并随行登记被替换的旧图（ES 同步达成后清理 OSS）。
      *
      * @param goods          商品实体类

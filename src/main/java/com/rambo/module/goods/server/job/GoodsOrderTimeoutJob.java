@@ -11,6 +11,7 @@ import com.rambo.module.goods.pojo.entity.Goods;
 import com.rambo.module.goods.pojo.entity.GoodsOrder;
 import com.rambo.module.goods.server.service.GoodsOrderService;
 import com.rambo.module.goods.server.service.GoodsService;
+import com.rambo.module.goods.server.service.impl.GoodsEsSyncService;
 import com.xxl.job.core.context.XxlJobHelper;
 import com.xxl.job.core.handler.annotation.XxlJob;
 import jakarta.annotation.Resource;
@@ -47,6 +48,8 @@ public class GoodsOrderTimeoutJob {
     private ChatSessionService chatSessionService;
     @Resource
     private LockClient lockClient;
+    @Resource
+    private GoodsEsSyncService goodsEsSyncService;
 
     @XxlJob("goodsOrderTimeoutJob")
     public void execute() {
@@ -107,6 +110,10 @@ public class GoodsOrderTimeoutJob {
         // 商品状态已变更（Job 直改绕过 @CacheEvict 业务方法）：逐个失效详情缓存，防止残留旧状态
         for (Long goodsId : goodsIds) {
             goodsService.evictGoodsDetail(goodsId);
+            // 商品状态已变更（TRADING -> NORMAL）：登记 ES 同步意图，超时释放的商品应重新可被搜到。
+            // 注意：Job 内逐单 CAS 相互独立、不做大事务，此处 outbox 意图与状态更新是两条独立提交，
+            // 派发由异步 + XXL-JOB 补偿双保险兜底。
+            goodsEsSyncService.syncToEsAsync(goodsId);
         }
 
         // 关闭对应会话（历史订单可能无会话记录，跳过不中断批量任务）

@@ -65,6 +65,8 @@ public class TaskWorkflowServiceImpl implements TaskWorkflowService {
     private ChatService chatService;
     @Resource
     private CacheClient cacheClient;
+    @Resource
+    private TaskEsSyncService taskEsSyncService;
 
     /**
      * 申请任务（编排层：校验任务 + 创建申请；并发防重由防重复注解与唯一索引兜底）
@@ -183,6 +185,12 @@ public class TaskWorkflowServiceImpl implements TaskWorkflowService {
                 // 任务已被其他线程修改，需要抛出业务异常让用户感知
                 throw new BusinessException(MessageConstants.TASK_STATUS_CHANGED);
             }
+
+            // 任务状态已变更（PENDING -> IN_PROGRESS）：事务内登记 ES 同步意图，与业务写库同事务原子落库。
+            // 原实现只在"发布任务/编辑任务"两处同步 ES，所有流转导致的状态变更全部遗漏，
+            // 导致 ES 仍显示"待接单"，用户搜到后申请会被状态校验拒绝。
+            taskEsSyncService.syncToEsAsync(task);
+
             // 通知申请人
             notificationSender.sendAsync(NotificationMessage.builder()
                     .userId(app.getApplicantId())
@@ -333,6 +341,9 @@ public class TaskWorkflowServiceImpl implements TaskWorkflowService {
                 throw new BusinessException(MessageConstants.TASK_STATUS_CHANGED);
             }
 
+            // 任务状态已变更（-> CANCELLED）：事务内登记 ES 同步意图，避免已取消任务仍可被搜到并申请
+            taskEsSyncService.syncToEsAsync(task);
+
             // 清理该任务下所有非终态申请（待处理→已拒绝，已接受→已取消）
             taskApplicationService.cancelTaskApplications(taskId);
 
@@ -392,6 +403,9 @@ public class TaskWorkflowServiceImpl implements TaskWorkflowService {
                 // 任务已被其他线程修改，需要抛出业务异常让用户感知
                 throw new BusinessException(MessageConstants.TASK_STATUS_CHANGED);
             }
+
+            // 任务状态已变更（-> CANCELLED，管理员强制取消）：事务内登记 ES 同步意图
+            taskEsSyncService.syncToEsAsync(task);
 
             // 清理该任务下所有非终态申请（待处理→已拒绝，已接受→已取消）
             taskApplicationService.cancelTaskApplications(taskId);
@@ -498,6 +512,9 @@ public class TaskWorkflowServiceImpl implements TaskWorkflowService {
                 throw new BusinessException(MessageConstants.TASK_STATUS_CHANGED);
             }
 
+            // 任务状态已变更（-> WAITING_CONFIRM）：事务内登记 ES 同步意图
+            taskEsSyncService.syncToEsAsync(task);
+
             // 通知任务发布者
             notificationSender.sendAsync(NotificationMessage.builder()
                     .userId(task.getPublisherId())
@@ -566,6 +583,9 @@ public class TaskWorkflowServiceImpl implements TaskWorkflowService {
                 throw new BusinessException(MessageConstants.TASK_STATUS_CHANGED);
             }
 
+            // 任务状态已变更（-> COMPLETED）：事务内登记 ES 同步意图，终态任务不再出现在可申请列表中
+            taskEsSyncService.syncToEsAsync(task);
+
             // 生成订单
             taskOrderService.autoCreateOrder(taskId, task.getPublisherId(), completedApp.getApplicantId());
             // 通知申请人
@@ -581,10 +601,19 @@ public class TaskWorkflowServiceImpl implements TaskWorkflowService {
             // 事务提交后执行外部副作用（关会话 + 排行榜加分），回滚不产生假状态/虚增
             Long applicantId = completedApp.getApplicantId();
             TransactionUtils.afterCommit(() -> {
-                chatSessionService.closeSession(sessionId);
                 String monthKey = PrefixConstants.TASK_RANK_MONTH + LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy-MM"));
+                // 排名加分前置：排名是任务完成的核心业务结果，绝不能因"关会话"这类附属动作失败而丢失。
+                // 原实现把 closeSession 放在最前且无 try-catch，一旦会话不存在抛 SESSION_NOT_FOUND，
+                // 异常会顺着 afterCommit 冒泡到 TransactionUtils.runSafely 被静默吞掉（仅一行 error 日志），
+                // 后面的两次 zIncrementScore 直接不执行 —— 表现为"排行榜偶尔少分"，且无任何业务报错。
                 cacheClient.zIncrementScore(PrefixConstants.TASK_RANK_TOTAL, String.valueOf(applicantId), 1);
                 cacheClient.zIncrementScore(monthKey, String.valueOf(applicantId), 1);
+                // 会话关闭与排名解耦：关会话失败只记录告警，不回滚已计入的排名
+                try {
+                    chatSessionService.closeSession(sessionId);
+                } catch (BusinessException e) {
+                    log.warn("关闭任务会话失败，taskId={}，原因：{}", taskId, e.getMessage());
+                }
             });
 
             log.info("用户 {} 确认完成任务成功，taskId={}", IdHolder.getId(), taskId);
