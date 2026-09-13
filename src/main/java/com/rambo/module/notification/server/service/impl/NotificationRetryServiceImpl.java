@@ -64,16 +64,21 @@ public class NotificationRetryServiceImpl extends ServiceImpl<NotificationRetryM
      */
     @Override
     public boolean incrRetryCount(Long messageId, String message) {
-        // 重试次数+1
+        // 重试次数+1。status 条件既是幂等护栏也是语义护栏：只对「待重试」记录累加，
+        // 已终态（SUCCESS/FAILED）的记录不会被后续迟到的失败回调改写
         lambdaUpdate()
                 .eq(NotificationRetry::getMessageId, messageId)
                 .eq(NotificationRetry::getStatus, RetryStatus.PENDING)
                 .setSql("retry_count = retry_count + 1")
                 .set(NotificationRetry::getErrorMessage, message)
                 .update();
-        // 超过最大重试次数，标记失败；返回是否刚被标记为 FAILED
+        // 超过最大重试次数，标记失败；返回是否刚被标记为 FAILED。
+        // 必须带 status = PENDING 条件：让 PENDING -> FAILED 成为「一次性状态跃迁」，
+        // 只有真正完成跃迁的那一次返回 true。原实现无 status 条件，
+        // 后续任意次调用都会因 retry_count 仍 >= 上限而再次返回 true，导致同一条消息被反复投递死信。
         return lambdaUpdate()
                 .eq(NotificationRetry::getMessageId, messageId)
+                .eq(NotificationRetry::getStatus, RetryStatus.PENDING)
                 .ge(NotificationRetry::getRetryCount, MAX_RETRY_COUNT)
                 .set(NotificationRetry::getStatus, RetryStatus.FAILED)
                 .update();
@@ -85,8 +90,11 @@ public class NotificationRetryServiceImpl extends ServiceImpl<NotificationRetryM
      */
     @Override
     public void markSuccess(Long messageId) {
+        // 只允许 PENDING -> SUCCESS：已 FAILED（已投死信、等待人工处理）的记录
+        // 不得被迟到的 ack 回调复活为成功，否则死信队列与重试表状态互相矛盾
         lambdaUpdate()
                 .eq(NotificationRetry::getMessageId, messageId)
+                .eq(NotificationRetry::getStatus, RetryStatus.PENDING)
                 .set(NotificationRetry::getStatus, RetryStatus.SUCCESS)
                 .update();
     }

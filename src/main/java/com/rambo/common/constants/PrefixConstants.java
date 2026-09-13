@@ -57,4 +57,7 @@ public class PrefixConstants {
     public static final String ADMIN_REFRESH_LOCK = "refresh_lock:admin:";
     // 超时关单 Job 分布式锁（防止 XXL-JOB 多执行器/重试并发触发重复关单）
     public static final String GOODS_ORDER_TIMEOUT_LOCK = "lock:goods:order:timeout";
+    // 通知重投 Job 分布式锁（同一批待重试消息被并发重投会产生双份发送确认，
+    // 导致 retry_count 一次 +2、重试上限被提前打满而把消息误投死信）
+    public static final String NOTIFICATION_RETRY_LOCK = "lock:notification:retry";
 }

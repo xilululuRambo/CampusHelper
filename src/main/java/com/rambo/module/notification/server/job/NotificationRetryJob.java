@@ -1,6 +1,8 @@
 package com.rambo.module.notification.server.job;
 
 import cn.hutool.json.JSONUtil;
+import com.rambo.common.constants.PrefixConstants;
+import com.rambo.infrastructure.cache.LockClient;
 import com.rambo.infrastructure.messaging.RabbitmqConfig;
 import com.rambo.infrastructure.messaging.RabbitmqProducer;
 import com.rambo.module.notification.pojo.dto.NotificationMessage;
@@ -13,6 +15,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
  * XXL-JOB：重试通知发送失败的消息（可靠性补偿闭环的定时重投入口）
@@ -29,9 +32,28 @@ public class NotificationRetryJob {
     private NotificationRetryService notificationRetryService;
     @Resource
     private RabbitmqProducer rabbitmqProducer;
+    @Resource
+    private LockClient lockClient;
 
     @XxlJob("notificationRetryJob")
     public void execute() {
+        // 分布式锁：重投不是「纯读」操作——每投一条都会在发布确认回调里改写 retry_count/status。
+        // 两个执行器并发跑（手动重试、调度重叠）会把同一批消息各投一遍，确认回调成对触发，
+        // retry_count 一次 +2，5 次上限实际只够 2~3 轮，消息被提前投进死信。
+        // 抢不到锁说明已有实例在处理，本次直接跳过（与 GoodsOrderTimeoutJob 同构）。
+        boolean locked = lockClient.tryLock(PrefixConstants.NOTIFICATION_RETRY_LOCK, 0, TimeUnit.SECONDS);
+        if (!locked) {
+            XxlJobHelper.log("通知重投任务正在其他执行器运行，本次跳过");
+            return;
+        }
+        try {
+            doExecute();
+        } finally {
+            lockClient.unlock(PrefixConstants.NOTIFICATION_RETRY_LOCK);
+        }
+    }
+
+    private void doExecute() {
         // 1. 查询待重试通知
         List<NotificationRetry> list = notificationRetryService.getWaitRetryList();
         if (list.isEmpty()) {
