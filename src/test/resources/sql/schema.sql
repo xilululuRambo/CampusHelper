@@ -543,3 +543,45 @@ create table t_task_rank_monthly
 
 create index idx_month
     on t_task_rank_monthly (month);
+
+-- 补录（2026-09-13）：t_operation_log 此前【只存在于 live 开发库】，schema.sql 与 alter.sql 均无 DDL，
+-- 属「手工建表后未回收进脚本」的遗漏。LogAspect 此前因缺 @Aspect 从未真正织入，
+-- 该表长期无人写入，问题被掩盖；切面修复后本表成为必需依赖，故补齐全量 DDL。
+-- 列注释已按 OperationModuleEnum / OperationTargetTypeEnum / OperatorRoleEnum 的【当前】code 订正
+-- （live 库注释停留在旧枚举：operator_role 整体偏移一位且缺匿名，module/target_type 缺尾部新增值）。
+create table t_operation_log
+(
+    id             bigint unsigned auto_increment comment '日志主键'
+        primary key,
+    create_time    datetime     default CURRENT_TIMESTAMP not null comment '操作时间戳',
+    operator_id    bigint unsigned                         not null comment '操作人ID（匿名访问记哨兵值 0）',
+    operator_role  tinyint                                 not null comment '操作人角色 0-用户 1-管理员 2-超级管理员 3-匿名用户',
+    trace_id       varchar(64)                             null comment '链路追踪ID(字符串,可含横杠)',
+    module         tinyint                                 not null comment '操作模块 1-认证 2-用户 3-任务 4-商品 5-系统 6-通知 7-聊天 8-搜索 9-管理员',
+    target_type    tinyint                                 null comment '操作对象类型 0-无 1-用户 2-任务 3-商品 4-订单 5-分类 6-评价 7-地址 8-申请 9-管理员',
+    target_id      bigint unsigned                         null comment '操作对象ID',
+    action         int                                     not null comment '操作类型编码(OperationActionEnum.code)',
+    description    varchar(500)                            null comment '操作描述',
+    result         tinyint      default 0                  not null comment '操作结果 0-成功 1-失败',
+    error_msg      varchar(500)                            null comment '失败原因摘要',
+    device_id      bigint                                  null comment '设备ID(仅USER填写，无设备上下文时为空)',
+    request_uri    varchar(255)                            null comment '请求URI',
+    request_method varchar(10)                             null comment '请求方法',
+    duration_ms    int                                     null comment '接口耗时(ms)'
+)
+    comment '统一操作审计日志表';
+
+create index idx_trace_id
+    on t_operation_log (trace_id);
+
+create index idx_operator
+    on t_operation_log (operator_id, operator_role);
+
+create index idx_role_action
+    on t_operation_log (operator_role, module, action);
+
+create index idx_target
+    on t_operation_log (target_type, target_id);
+
+create index idx_create_time
+    on t_operation_log (create_time);

@@ -122,3 +122,45 @@ COMMIT;
 -- 上面 ⑧ 只把列注释补成 0-待处理 1-已接受 2-已拒绝 3-已完成 4-已取消。
 -- 相比旧枚举，这是【在尾部追加】新值，0/1/2/3 的既有语义完全不变，属安全的「枚举扩展」。
 -- 结论：枚举「扩展」无需迁移；枚举「重排」（让已有数字换含义）必须迁移，且要注意赋值顺序。
+
+-- ===== 2026-09-13 审计链路修复：t_operation_log 补进脚本 + 三个枚举列注释订正 =====
+-- 背景：LogAspect 缺 @Aspect，Spring AOP 未将其解析为切面，60+ 个 @Log 注解从未生效，
+--     该表自建库起从未被写入（live 库 0 行、跑完 189 个用例的测试库也是 0 行）。
+--     切面修复后本表成为硬依赖，而它此前【只存在于 live 开发库】，
+--     schema.sql 与 alter.sql 均无 DDL —— 任何按脚本新建的库一上线就会写库失败。
+--
+-- ⑨ 幂等补建（live/测试库均已存在该表，此处仅保证「全新库 + 已有库」都能收敛到同一结构）
+CREATE TABLE IF NOT EXISTS t_operation_log
+(
+    id             bigint unsigned auto_increment COMMENT '日志主键'
+        PRIMARY KEY,
+    create_time    datetime     DEFAULT CURRENT_TIMESTAMP NOT NULL COMMENT '操作时间戳',
+    operator_id    bigint unsigned                         NOT NULL COMMENT '操作人ID（匿名访问记哨兵值 0）',
+    operator_role  tinyint                                 NOT NULL COMMENT '操作人角色 0-用户 1-管理员 2-超级管理员 3-匿名用户',
+    trace_id       varchar(64)                             NULL COMMENT '链路追踪ID(字符串,可含横杠)',
+    module         tinyint                                 NOT NULL COMMENT '操作模块 1-认证 2-用户 3-任务 4-商品 5-系统 6-通知 7-聊天 8-搜索 9-管理员',
+    target_type    tinyint                                 NULL COMMENT '操作对象类型 0-无 1-用户 2-任务 3-商品 4-订单 5-分类 6-评价 7-地址 8-申请 9-管理员',
+    target_id      bigint unsigned                         NULL COMMENT '操作对象ID',
+    action         int                                     NOT NULL COMMENT '操作类型编码(OperationActionEnum.code)',
+    description    varchar(500)                            NULL COMMENT '操作描述',
+    result         tinyint      DEFAULT 0                  NOT NULL COMMENT '操作结果 0-成功 1-失败',
+    error_msg      varchar(500)                            NULL COMMENT '失败原因摘要',
+    device_id      bigint                                  NULL COMMENT '设备ID(仅USER填写，无设备上下文时为空)',
+    request_uri    varchar(255)                            NULL COMMENT '请求URI',
+    request_method varchar(10)                             NULL COMMENT '请求方法',
+    duration_ms    int                                     NULL COMMENT '接口耗时(ms)',
+    KEY idx_trace_id (trace_id),
+    KEY idx_operator (operator_id, operator_role),
+    KEY idx_role_action (operator_role, module, action),
+    KEY idx_target (target_type, target_id),
+    KEY idx_create_time (create_time)
+) COMMENT '统一操作审计日志表';
+
+-- ⑩ 三个枚举列注释订正（live 库注释停留在旧枚举，与当前 Java 枚举不一致）
+--    operator_role 最严重：库注释 1-用户 2-管理员 3-超级管理员，实际是 0/1/2/3 —— 整体偏移一位且缺匿名，
+--                   照注释排查会把「匿名用户(3)」误读成「超级管理员(3)」。
+--    module / target_type 属尾部扩展未同步：分别缺 9-管理员、7-地址 / 8-申请 / 9-管理员。
+--    注：本表无历史数据（切面从未织入），因此只订正注释，无需数据迁移。
+ALTER TABLE t_operation_log MODIFY COLUMN operator_role tinyint NOT NULL COMMENT '操作人角色 0-用户 1-管理员 2-超级管理员 3-匿名用户';
+ALTER TABLE t_operation_log MODIFY COLUMN module tinyint NOT NULL COMMENT '操作模块 1-认证 2-用户 3-任务 4-商品 5-系统 6-通知 7-聊天 8-搜索 9-管理员';
+ALTER TABLE t_operation_log MODIFY COLUMN target_type tinyint NULL COMMENT '操作对象类型 0-无 1-用户 2-任务 3-商品 4-订单 5-分类 6-评价 7-地址 8-申请 9-管理员';
