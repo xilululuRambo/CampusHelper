@@ -52,7 +52,8 @@ public class PrefixConstants {
     public static final String ADMIN_TOKENS = "admin_tokens:";
     // Refresh Token 刷新锁前缀
     public static final String REFRESH_LOCK = "refresh_lock:";
-    // 管理员 Refresh Token 刷新锁前缀（与用户锁隔离，避免 admin/user 表 id 冲突）
+    // 管理员 Refresh Token 刷新锁前缀（与用户锁命名空间隔离：admin 与 user 的 id 可能相同，
+    // 共用锁键会让两者刷新互相阻塞，抢不到锁的一方被误跳过）
     public static final String ADMIN_REFRESH_LOCK = "refresh_lock:admin:";
     // 超时关单 Job 分布式锁（防止 XXL-JOB 多执行器/重试并发触发重复关单）
     public static final String GOODS_ORDER_TIMEOUT_LOCK = "lock:goods:order:timeout";

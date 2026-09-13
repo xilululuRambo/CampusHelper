@@ -84,6 +84,16 @@ public class JwtInterceptor implements HandlerInterceptor {
                 }
                 // 将 accessToken 存入 ThreadLocal，供 logout 等场景使用
                 AccessTokenHolder.setToken(accessToken);
+
+                // 管理员活跃时续期 RT（String 存储，无设备维度）：
+                // 与用户侧同语义的阈值节流——仅当剩余不足窗口一半时才续写，
+                // 把每请求一次的 TTL 重写降为每半窗口最多一次；负值（key 不存在）不续，会话已结束不复活
+                String adminTokensKey = PrefixConstants.ADMIN_TOKENS + id;
+                long remainMs = cacheClient.getRemainTtl(adminTokensKey);
+                if (remainMs >= 0 && remainMs < jwtProperties.getRefreshExpiration() / 2) {
+                    cacheClient.expire(adminTokensKey, jwtProperties.getRefreshExpiration(), TimeUnit.MILLISECONDS);
+                }
+
                 IdHolder.setId(Long.parseLong(id));
                 RoleHolder.setRole(role);
                 return true;
@@ -108,14 +118,13 @@ public class JwtInterceptor implements HandlerInterceptor {
 
             // 用户活跃时续期该设备 field 的过期时间（RMapCache 原生支持 field 级 TTL）；
             // 阈值节流：仅当剩余不足窗口一半时才续写——滑动语义不变，写放大从「每请求一次」
-            // 降为「每半窗口最多一次」；负值（字段不存在）不续，会话已结束不复活
+            // 降为「每半窗口最多一次」；负值（字段不存在）不续，会话已结束不复活。
+            // 续期走 expireEntry（仅重置 TTL、不重写 value）：底层单条 Lua 原子脚本，
+            // 字段不存在/已过期返回 false 不复活会话，规避「读旧 RT 写回」的读改写竞态窗口
             String userTokensKey = PrefixConstants.USER_TOKENS + id;
             long remainMs = cacheClient.mapRemainTtl(userTokensKey, deviceId);
             if (remainMs >= 0 && remainMs < jwtProperties.getRefreshExpiration() / 2) {
-                String currentRt = cacheClient.mapGet(userTokensKey, deviceId);
-                if (currentRt != null) {
-                    cacheClient.mapPut(userTokensKey, deviceId, currentRt, jwtProperties.getRefreshExpiration(), TimeUnit.MILLISECONDS);
-                }
+                cacheClient.mapExpireEntry(userTokensKey, deviceId, jwtProperties.getRefreshExpiration(), TimeUnit.MILLISECONDS);
             }
 
             //  将用户ID设置到ThreadLocal中
@@ -140,7 +149,8 @@ public class JwtInterceptor implements HandlerInterceptor {
                 try {
                     String adminId = jwtUtil.parseStringClaim(refreshToken);
 
-                    // 加锁，防止并发刷新（与用户锁隔离，避免 admin 表和 user 表 id 冲突）
+                    // 加锁，防止并发刷新（锁键与用户侧命名空间隔离：admin 与 user 的 id 可能相同，
+                    // 共用锁键会让两者的刷新互相阻塞，抢不到锁的一方被误跳过）
                     String adminLockKey = PrefixConstants.ADMIN_REFRESH_LOCK + adminId;
                     try {
                         boolean adminLocked = lockClient.tryLock(adminLockKey, NumConstants.LOCK_WAIT_TIME_MILLISECONDS, NumConstants.LOCK_HOLD_TIME_MILLISECONDS, TimeUnit.MILLISECONDS);

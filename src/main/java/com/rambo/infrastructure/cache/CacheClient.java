@@ -9,6 +9,7 @@ import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -114,6 +115,15 @@ public class CacheClient {
         stringRedisTemplate.expire(key, timeout, unit);
     }
 
+    /**
+     * 读取 key 的剩余过期时间（毫秒）；key 不存在返回 -2、未设置过期返回 -1（Redis TTL 语义）。
+     * 供「窗口过半才续期」的阈值节流使用：把每请求的 TTL 重写降为每半窗口最多一次。
+     */
+    public long getRemainTtl(String key) {
+        Long remainMs = stringRedisTemplate.getExpire(key, TimeUnit.MILLISECONDS);
+        return remainMs != null ? remainMs : -2;
+    }
+
     // ==================== ZSet 操作（排行榜 / 热搜） ====================
 
     public void zIncrementScore(String key, String member, double delta) {
@@ -153,6 +163,25 @@ public class CacheClient {
     public long mapRemainTtl(String key, String field) {
         RMapCache<String, String> map = redissonClient.getMapCache(key);
         return map.remainTimeToLive(field);
+    }
+
+    /**
+     * 仅重置 Map 字段的 field 级过期时间，<b>不重写 value</b>（Redisson 3.23+ expireEntry）。
+     * <p>
+     * 底层为单条 Lua 原子脚本：只更新超时记账，不读也不写 value，
+     * 避免「mapGet 读值 + mapPut 写回」读改写方案的竞态窗口；
+     * 字段不存在或已过期时返回 false，不会复活已结束的会话。
+     * </p>
+     * 注意：ttl 必须为正数——expireEntry 会把 0/负数解释为「移除 TTL（永不过期）」，故此处显式拒绝。
+     *
+     * @return true=续期成功；false=字段不存在或已过期
+     */
+    public boolean mapExpireEntry(String key, String field, long ttl, TimeUnit unit) {
+        if (ttl <= 0) {
+            throw new IllegalArgumentException("ttl 必须为正数（0/负数会被 expireEntry 解释为永不过期）");
+        }
+        RMapCache<String, String> map = redissonClient.getMapCache(key);
+        return map.expireEntry(field, Duration.ofMillis(unit.toMillis(ttl)), null);
     }
 
     /**
