@@ -129,7 +129,18 @@ public class GoodsOrderServiceImpl extends ServiceImpl<GoodsOrderMapper, GoodsOr
                 throw new BusinessException(MessageConstants.NO_PERMISSION);
             }
 
-            //4.买家付款
+            //4.校验订单是否已超时
+            //  与超时关单 Job 使用同一个时钟源与同一个字段（createTime），保证两处判定边界一致。
+            //  Job 只是异步清理器，不能充当唯一的超时守门人：admin 停摆、执行器未注册成功、
+            //  任务被停用等情况下，过期订单在库里仍停留于 PENDING_PAYMENT，若这里不校验就会被永久支付。
+            //  放在买家校验之后，避免非买家通过错误信息差异探测他人订单状态。
+            if (goodsOrder.getCreateTime()
+                    .plusMinutes(NumConstants.PENDING_PAYMENT_EXPIRE_MINUTES)
+                    .isBefore(LocalDateTime.now())) {
+                throw new BusinessException(MessageConstants.GOODS_ORDER_EXPIRED);
+            }
+
+            //5.买家付款
             boolean isSuccess = userService.lambdaUpdate()
                     .eq(User::getId, userId)
                     .ge(User::getBalance, goodsOrder.getTotalAmount())
@@ -139,7 +150,7 @@ public class GoodsOrderServiceImpl extends ServiceImpl<GoodsOrderMapper, GoodsOr
                 throw new BusinessException(MessageConstants.BALANCE_NOT_ENOUGH);
             }
 
-            //5.更新卖家余额
+            //6.更新卖家余额
             isSuccess = userService.lambdaUpdate()
                     .eq(User::getId, goodsOrder.getOwnerId())
                     .setSql("balance = balance + {0}", goodsOrder.getTotalAmount())
@@ -148,7 +159,7 @@ public class GoodsOrderServiceImpl extends ServiceImpl<GoodsOrderMapper, GoodsOr
                 throw new BusinessException(MessageConstants.GOODS_ORDER_PAY_ERROR);
             }
 
-            // 6. 更新订单状态为待发货
+            // 7. 更新订单状态为待发货
             isSuccess = lambdaUpdate()
                     .eq(GoodsOrder::getId, orderId)
                     .eq(GoodsOrder::getOrderStatus, GoodsOrderStatus.PENDING_PAYMENT)
@@ -159,7 +170,7 @@ public class GoodsOrderServiceImpl extends ServiceImpl<GoodsOrderMapper, GoodsOr
                 throw new BusinessException(MessageConstants.GOODS_ORDER_PAY_ERROR);
             }
 
-            // 7. 发送订单付款成功消息
+            // 8. 发送订单付款成功消息
             //给买家发送付款成功通知
             notificationSender.sendAsync(NotificationMessage.builder()
                     .userId(goodsOrder.getBuyerId())

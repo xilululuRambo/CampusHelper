@@ -110,6 +110,7 @@ public class MessageConstants {
     // ==================== 商品订单 ====================
     public static final String GOODS_ORDER_STATUS_ERROR = "商品订单状态错误，无法执行当前操作";
     public static final String GOODS_ORDER_NOT_FOUND = "商品订单不存在";
+    public static final String GOODS_ORDER_EXPIRED = "订单已超时关闭，请重新下单";
     public static final String GOODS_ORDER_PAY_ERROR = "商品订单支付失败";
     public static final String GOODS_ORDER_CANCEL_ERROR = "商品订单取消失败";
     public static final String GOODS_ORDER_DELIVERY_ERROR = "商品订单发货失败";
