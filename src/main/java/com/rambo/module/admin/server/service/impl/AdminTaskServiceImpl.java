@@ -94,12 +94,13 @@ public class AdminTaskServiceImpl implements AdminTaskService {
     /**
      * 下架任务
      *
+     * <p>审计说明：本方法<b>刻意不加</b>{@code @Log}。被委托的
+     * {@code taskWorkflowService.cancelTaskByAdmin} 已带同 action（TASK_ADMIN_CANCEL）的审计注解，
+     * 两者叠加会让一次管理员下架产生两条审计记录。审计保留在业务层，才能覆盖任务状态机的所有入口。</p>
+     *
      * @param id 任务ID
      */
     @Override
-    @Log(module = OperationModuleEnum.TASK, targetType = OperationTargetTypeEnum.TASK,
-            targetIdEL = "#id",
-            action = OperationActionEnum.TASK_ADMIN_CANCEL, descriptionEL = "'管理员下架任务 id=' + #id")
     public void downTask(Long id) {
         // 复用任务状态机：锁 + 状态校验 + 取消任务 + 清理申请 + 关闭会话 + 通知双方
         taskWorkflowService.cancelTaskByAdmin(id);

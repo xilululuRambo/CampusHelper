@@ -100,12 +100,15 @@ public class AdminGoodsServiceImpl implements AdminGoodsService {
     /**
      * 强制下架/恢复商品（编排层：下架规则在 goods 模块，事务统一控制）
      * 强制下架联动：取消该商品所有未完成订单（已付款订单自动退款），任一失败整体回滚
+     *
+     * <p>审计说明：本方法<b>刻意不加</b>{@code @Log}。被委托的
+     * {@code goodsService.updateGoodsStatusByAdmin} 已带同 action、同 description 的审计注解，
+     * 两者叠加会让一次管理员操作产生两条完全相同的审计记录（强制下架一个含 5 个未完成订单的商品
+     * 会写出 7 条记录：1 条商品状态 + 1 条重复商品状态 + 5 条订单取消）。
+     * 审计保留在业务层，是因为超时关单等其他路径也可能调用它，收敛在业务层才能全覆盖。</p>
      */
     @Override
     @Transactional
-    @Log(module = OperationModuleEnum.GOODS, targetType = OperationTargetTypeEnum.GOODS,
-            targetIdEL = "#id",
-            action = OperationActionEnum.GOODS_STATUS_UPDATE_BY_ADMIN, descriptionEL = "'管理员更新商品状态 id=' + #id")
     public void updateGoodsStatus(Long id, GoodsStatus goodsStatus) {
         goodsService.updateGoodsStatusByAdmin(id, goodsStatus);
 
