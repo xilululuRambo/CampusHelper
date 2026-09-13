@@ -72,3 +72,53 @@ ALTER TABLE t_goods_evaluation MODIFY COLUMN score tinyint NOT NULL COMMENT '评
 
 -- ⑧ 任务申请状态列注释订正：补 3-已完成、4-已取消（与 TaskApplyStatus 枚举对齐）
 ALTER TABLE t_task_application MODIFY COLUMN status tinyint(1) DEFAULT 0 NOT NULL COMMENT '0-待处理 1-已接受 2-已拒绝 3-已完成 4-已取消';
+
+-- ===== 2026-09-13 t_task 任务状态枚举「语义重排」的数据迁移（一次性，不可重复执行） =====
+-- 背景：提交 068a238 修改了 TaskStatus 的枚举值定义，这属于「语义重排」而不是「尾部扩展」：
+--     旧: 0-待接受   2-进行中   3-待确认完成   4-已完成   5-已取消
+--     新: 0-待接单   1-进行中   2-待确认       3-已完成   4-已取消
+-- 代码、EnumConstants、schema.sql 列注释都已同步，但【存量数据仍是旧编码】，必须迁移，否则：
+--     status=2 → 进行中的任务被读成「待确认」
+--     status=3 → 待确认的任务被读成「已完成」
+--     status=4 → 已完成的任务被读成「已取消」
+--     status=5 → 新枚举中不存在该值，MyBatis @EnumValue 反序列化直接抛异常（任务详情接口 500）
+--
+-- ⚠️ 执行前必做三项：
+--   1) 备份：  CREATE TABLE t_task_bak_20260913 AS SELECT * FROM t_task;
+--   2) 巡检值域（预期只有 0/2/3/4/5）：
+--              SELECT status, COUNT(*) FROM t_task GROUP BY status ORDER BY status;
+--   3) 确认改的是业务库 campusHelper 的 t_task，不是 t_activity.status（那是活动状态，含义完全不同）。
+--      若巡检发现 status=5 记录数为 0 而 status=1 已有记录，说明本段可能已执行过，需人工确认后再决定是否继续。
+--
+-- ⚠️ 执行顺序必须是【从低到高】，不可调换：
+--     所有新值都小于对应旧值，只有先把低位腾空，后面的赋值才不会踩到已迁好的数据。
+--     反之若从高到低：5→4 会让 status=4 同时混入「旧4已完成」与「旧5已取消」，
+--     紧接着的 4→3 会把这两批一并改成 3，数据彻底错乱且无法回滚。
+--
+-- ⚠️ 本段不是幂等语句（新旧值域重叠，无法用 WHERE 条件区分），重复执行必然错乱，只能执行一次。
+--     建议与代码发布放在同一停机窗口内完成，迁移后立即执行下方校验。
+START TRANSACTION;
+
+UPDATE t_task SET status = 1 WHERE status = 2;  -- 旧 进行中     -> 新 进行中
+UPDATE t_task SET status = 2 WHERE status = 3;  -- 旧 待确认完成 -> 新 待确认
+UPDATE t_task SET status = 3 WHERE status = 4;  -- 旧 已完成     -> 新 已完成
+UPDATE t_task SET status = 4 WHERE status = 5;  -- 旧 已取消     -> 新 已取消
+-- status = 0（待接受/待接单）语义未变，无需迁移
+
+COMMIT;
+
+-- 执行后校验：结果应与第 0 步备份表逐值对比，且不存在 status >= 5 的行
+--   SELECT status, COUNT(*) FROM t_task GROUP BY status ORDER BY status;
+--
+-- ⚠️ 配套动作：ES 的 task_index 中 status 存放的是代码写入的旧编码
+--     （TaskEsSyncService 写入的是 TaskStatus.getCode()），MySQL 迁移后二者不再一致，
+--     需要重建该索引。ES 是派生索引，以 MySQL 为准全量重灌即可，无需编写 ES 侧数据迁移脚本。
+--
+-- 📌 工程改进建议：本项目没有迁移版本记录表，脚本无法自证「是否已执行」。
+--     引入一张 flyway_schema_history 风格的 t_schema_migration 表（记录脚本名 + 校验和 + 执行时间），
+--     可让此类一次性脚本具备可追溯性，避免依赖人工记忆判断。
+
+-- ===== 对照：t_task_application 为什么【不需要】迁移 =====
+-- 上面 ⑧ 只把列注释补成 0-待处理 1-已接受 2-已拒绝 3-已完成 4-已取消。
+-- 相比旧枚举，这是【在尾部追加】新值，0/1/2/3 的既有语义完全不变，属安全的「枚举扩展」。
+-- 结论：枚举「扩展」无需迁移；枚举「重排」（让已有数字换含义）必须迁移，且要注意赋值顺序。
