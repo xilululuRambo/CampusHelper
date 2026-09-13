@@ -12,6 +12,7 @@ import com.rambo.module.operationlog.enums.OperationTargetTypeEnum;
 import com.rambo.module.operationlog.enums.OperatorRoleEnum;
 import com.rambo.module.operationlog.pojo.entity.OperationLog;
 import com.rambo.module.operationlog.server.service.IOperationLogService;
+import com.rambo.infrastructure.database.TransactionUtils;
 import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpServletRequest;
 import org.aspectj.lang.ProceedingJoinPoint;
@@ -19,6 +20,7 @@ import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Pointcut;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
@@ -136,8 +138,24 @@ public class LogAspect {
                 Long deviceId = DeviceHolder.getDeviceId();
                 operationLog.setDeviceId(deviceId);
             }
-            //日志保存
-            operationLogService.saveLog(operationLog);
+
+            // 日志保存：审计记录必须反映「事务最终是否生效」。
+            // 本切面标了 @Order(1)，位于事务通知之外，因此：
+            //  - 外层方法自身：事务已在 joinPoint.proceed() 内结束，此处无事务上下文 → 立即落库；
+            //  - 内层方法（被外层事务包裹）：此处仍有活动事务 → 延迟到 afterCompletion，
+            //    若外层事务回滚，则改写为失败记录，避免「业务已回滚、审计却记成功」的假成功。
+            // 业务方法自身抛异常时结论已确定（失败），无需再等事务结果。
+            if (operationResult == 1) {
+                operationLogService.saveLog(operationLog);
+            } else {
+                TransactionUtils.afterCompletion(status -> {
+                    if (status == TransactionSynchronization.STATUS_ROLLED_BACK) {
+                        operationLog.setResult(1);
+                        operationLog.setErrorMsg("外层事务回滚，本次业务变更未生效");
+                    }
+                    operationLogService.saveLog(operationLog);
+                });
+            }
         }
         return result;
     }

@@ -4,6 +4,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import java.util.function.IntConsumer;
+
 /**
  * 事务同步工具：
  * 将外部副作用（MQ 发送、MongoDB 写、Redis 写、OSS 删除等）与数据库事务解耦，
@@ -80,6 +82,33 @@ public final class TransactionUtils {
                 }
             }
         });
+    }
+
+    /**
+     * 事务完成后执行，并把最终状态（{@link TransactionSynchronization#STATUS_COMMITTED} /
+     * {@link TransactionSynchronization#STATUS_ROLLED_BACK}）告知回调。
+     *
+     * <p>与 {@link #afterTransaction} 的区别：后者只能延后执行时机，回调拿不到回滚信号，
+     * 因此无法满足「必须先知道事务最终成败，才能决定写什么内容」的场景。典型代表是审计日志：
+     * 内层方法在外层事务中执行时，其自身逻辑成功了，但如果外层事务随后回滚，业务变更并未生效，
+     * 此时若照常落一条「成功」审计，就会留下与事实相反的假记录。本方法让调用方能据状态修正结论。</p>
+     *
+     * <p>无事务上下文时以 {@link TransactionSynchronization#STATUS_COMMITTED} 立即执行
+     * （此时业务写已由自动提交生效，语义等价）。回调内异常被捕获记录，不影响调用线程。</p>
+     *
+     * @param action 接收事务最终状态的回调
+     */
+    public static void afterCompletion(IntConsumer action) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCompletion(int status) {
+                    runSafely(() -> action.accept(status));
+                }
+            });
+        } else {
+            runSafely(() -> action.accept(TransactionSynchronization.STATUS_COMMITTED));
+        }
     }
 
     // 线程安全地执行 action，忽略其返回值和异常，仅记录日志。用于 afterCommit 和 onRollback 中
