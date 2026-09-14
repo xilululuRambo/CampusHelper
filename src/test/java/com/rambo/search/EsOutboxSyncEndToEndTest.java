@@ -132,7 +132,7 @@ class EsOutboxSyncEndToEndTest extends BaseApiTest {
     @org.junit.jupiter.api.BeforeEach
     void initJdbc() {
         jdbcTemplate = new org.springframework.jdbc.core.JdbcTemplate(dataSource);
-        for (int i = 1; i <= 12; i++) {
+        for (int i = 1; i <= 14; i++) {
             long staleId = dataId(i);
             deleteEsDocQuietly(staleId);
             // 新版 outbox 无 uk_data_type_data_id，同 dataId 可有多行；删除要按 dataId 全清
@@ -509,6 +509,98 @@ class EsOutboxSyncEndToEndTest extends BaseApiTest {
         @Override
         protected void deleteExternalFiles(List<String> fileUrls) throws Exception {
             throw new IllegalStateException("模拟 OSS 清理失败");
+        }
+    }
+
+    /**
+     * 子类替身：<b>只让第 1 次 ES 写入失败</b>，之后恢复正常 —— 模拟一次「短暂的 ES 抖动」。
+     * <p>与 {@link FailingTaskEsSyncService} 的区别：那个是「一直失败」用来测 FAILED 终态；
+     * 这个是「失败一次就恢复」，用来测<b>补偿闭环能不能真的把这次失败救回来</b>。</p>
+     */
+    private static class FlakyTaskEsSyncService extends TaskEsSyncService {
+        private final java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+
+        @Override
+        protected void saveEsDoc(EsDTO esDTO, long version) throws Exception {
+            if (calls.incrementAndGet() == 1) {
+                throw new IOException("模拟 ES 短暂不可用（第 1 次写入失败）");
+            }
+            super.saveEsDoc(esDTO, version);
+        }
+    }
+
+    // ==================== 补偿闭环：失败 → 退避 → 捞回 → 重投成功 ====================
+
+    @Test
+    @DisplayName("端到端 · 补偿闭环：首次失败进冷却 → 退避到期被 getWaitList 捞回 → 重投成功且版本=行 id")
+    void compensationLoop_failureThenRetrySucceeds() throws Exception {
+        long id = dataId(14);
+        insertRealTask(id, "补偿闭环任务", 1);
+        try {
+            // 注入一次「只失败一次」的真实 ES 写入故障
+            FlakyTaskEsSyncService flaky = new FlakyTaskEsSyncService();
+            setField(flaky, "esSyncOutboxService", esSyncOutboxService);
+            setField(flaky, "taskExecutor", (java.util.concurrent.Executor) Runnable::run);
+            setField(flaky, "taskMapper", taskMapper);
+            setField(flaky, "esUtil", esUtil);
+
+            Long outboxId = enqueueOnly(id, null);
+
+            // ---------- 第 1 次派发：ES 抖动，失败 ----------
+            flaky.dispatch(outboxId);
+
+            EsSyncOutbox afterFail = esSyncOutboxService.getById(outboxId);
+            assertThat(afterFail.getRetryCount())
+                    .as("失败必须落库计数，补偿 Job 靠它判断试过几次")
+                    .isEqualTo(1);
+            assertThat(afterFail.getStatus())
+                    .as("未达上限必须保持 PENDING，否则补偿链就断了")
+                    .isEqualTo(RetryStatus.PENDING);
+            assertThat(afterFail.getNextRetryAt())
+                    .as("失败后 nextRetryAt 必须被推到未来（指数退避第 1 档 = 30s 后），"
+                            + "否则补偿 Job 会立刻把它捞回来重投，退避形同虚设")
+                    .isAfter(LocalDateTime.now());
+            assertThat(getEsDoc(id)).as("首次写入失败，ES 里不应有文档").isNull();
+
+            // ---------- 冷却期内：补偿 Job 的取件入口必须取不到它 ----------
+            assertThat(esSyncOutboxService.getWaitList("task", 200))
+                    .as("退避窗口内不得被补偿 Job 捞回——这是「指数退避真正生效」的物理证据")
+                    .noneMatch(r -> r.getId().equals(outboxId));
+
+            // ---------- 模拟时间推进到退避到期（不真等 30 秒） ----------
+            esSyncOutboxService.lambdaUpdate()
+                    .eq(EsSyncOutbox::getId, outboxId)
+                    .set(EsSyncOutbox::getNextRetryAt, LocalDateTime.now().minusSeconds(1))
+                    .update();
+
+            List<EsSyncOutbox> waitList = esSyncOutboxService.getWaitList("task", 200);
+            EsSyncOutbox claimed = waitList.stream()
+                    .filter(r -> r.getId().equals(outboxId))
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError(
+                            "退避到期后行仍未被 getWaitList 捞到——补偿 Job 将永远看不到这条失败意图"));
+
+            // ---------- 第 2 次派发（补偿 Job 的真实行为：按行 id 逐条 dispatch） ----------
+            flaky.dispatch(claimed.getId());
+
+            EsSyncOutbox afterRetry = esSyncOutboxService.getById(outboxId);
+            assertThat(afterRetry.getStatus())
+                    .as("ES 恢复后重投必须收敛到 SUCCESS——这是「最终一致」的落点")
+                    .isEqualTo(RetryStatus.SUCCESS);
+            assertThat(afterRetry.getRetryCount())
+                    .as("重试成功后计数保留为 1（可观测：这条行曾经失败过一次），不清零")
+                    .isEqualTo(1);
+
+            assertThat(getEsDoc(id))
+                    .as("补偿重投后文档必须真的写进 ES")
+                    .isNotNull();
+            assertThat(getEsVersion(id))
+                    .as("补偿路径写入的版本号必须仍等于发件箱行 id——"
+                            + "重投不会换版本，因此 ES 侧仍能靠 external version 拦住乱序")
+                    .isEqualTo(outboxId);
+        } finally {
+            deleteEsDocQuietly(id);
+            cleanup(id);
         }
     }
 
