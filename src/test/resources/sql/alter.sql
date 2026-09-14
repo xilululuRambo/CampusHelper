@@ -58,6 +58,23 @@ CREATE INDEX idx_outbox_status ON t_es_sync_outbox (status);
 -- 路线 B：OSS 清理已并入事务性 Outbox，旧的重试表与两条链路收敛为一张待办表，删除旧表
 DROP TABLE IF EXISTS t_es_sync_retry;
 
+-- ===== 2026-09-14 Outbox 改造：去 es_version + 加 next_retry_at 指数退避 =====
+-- 动机：外部版本号改用 outbox 自增 id（严格单调，避免时钟回拨/进程内序列竞争），
+--       同 (data_type, data_id) 允许多行（每行一个独立 id=版本号），
+--       重试按指数退避推进 next_retry_at（30→60→120→240→480→600→600... 秒，封顶 10 分钟）。
+--
+-- 变更顺序：先删列/键/索引 → 加 next_retry_at（DEFAULT 立即生效，旧 PENDING 行可被派发） → 加新索引
+ALTER TABLE t_es_sync_outbox DROP COLUMN es_version;
+ALTER TABLE t_es_sync_outbox DROP INDEX uk_data_type_data_id;
+ALTER TABLE t_es_sync_outbox DROP INDEX idx_outbox_status;
+-- next_retry_at 必须用 DATETIME(3)：DATETIME(0) 会把小数秒四舍五入（写 .797 存成下一秒），
+-- 而 getWaitList 用「同一秒内的真实 NOW」比较，会把刚登记的行判为「尚未到重试时刻」而查不出来。
+ALTER TABLE t_es_sync_outbox
+    ADD COLUMN next_retry_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+        COMMENT '下次可重试时间（指数退避：失败后 = NOW + min(30*2^retryCount, 600) 秒）';
+ALTER TABLE t_es_sync_outbox
+    ADD INDEX idx_outbox_status_retry (status, next_retry_at);
+
 -- ===== 2026-09-12 注释/DDL 审查修正：补并发防重唯一索引 + 列注释订正 =====
 -- ⑤ t_goods_evaluation (order_id, from_uid) 唯一索引：同订单同人防并发重复评价
 --    （GoodsEvaluationServiceImpl 捕获 DuplicateKeyException 兜底依赖此索引；存量若有重复数据需先清理）

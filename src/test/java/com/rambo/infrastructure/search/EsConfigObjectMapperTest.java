@@ -99,13 +99,11 @@ class EsConfigObjectMapperTest {
     @DisplayName("round-trip：序列化结果可被同一 mapper 反序列化（搜索结果解析依赖）")
     void roundTrip() throws Exception {
         EsDTO dto = sampleDto();
-        dto.setUpdateTime(1757777370000L);
 
         EsDTO back = mapper.readValue(mapper.writeValueAsString(dto), EsDTO.class);
 
         assertThat(back.getId()).isEqualTo(1L);
         assertThat(back.getTitle()).isEqualTo("二手教材");
         assertThat(back.getCreateTime()).isEqualTo(dto.getCreateTime());
-        assertThat(back.getUpdateTime()).isEqualTo(1757777370000L);
     }
 }

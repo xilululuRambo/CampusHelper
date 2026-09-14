@@ -48,25 +48,28 @@ create index idx_user_id
 
 create table t_es_sync_outbox
 (
-    id          bigint auto_increment comment '主键'
+    id           bigint auto_increment comment '主键（同时充当 ES 外部版本号：自增 id 严格单调）'
         primary key,
-    data_id     bigint                                not null comment '业务数据ID（商品ID/任务ID）',
-    data_type   varchar(32)                           not null comment '数据类型（goods商品、task任务）',
-    op_type     tinyint     default 0                 not null comment '操作类型：0-写入/更新，1-删除',
-    es_version  bigint                                not null comment 'ES外部版本号（进程内单调递增，防乱序）',
-    file_urls   text                                  null comment '待清理的OSS文件（objectName），逗号分隔；ES同步达成后删除并清空',
-    retry_count int         default 0                 not null comment '已重试次数',
-    status      tinyint     default 0                 not null comment '状态：0-待同步 1-同步成功 2-重试失败终止',
-    error_msg   text                                  null comment '最后一次失败的错误信息',
-    create_time datetime    default CURRENT_TIMESTAMP not null comment '创建时间',
-    update_time datetime    default CURRENT_TIMESTAMP not null on update CURRENT_TIMESTAMP comment '更新时间',
-    constraint uk_data_type_data_id
-        unique (data_type, data_id)
+    data_id      bigint                                not null comment '业务数据ID（商品ID/任务ID）',
+    data_type    varchar(32)                           not null comment '数据类型（goods商品、task任务）',
+    op_type      tinyint     default 0                 not null comment '操作类型：0-写入/更新，1-删除',
+    file_urls    text                                  null comment '待清理的OSS文件（objectName），逗号分隔；ES同步达成后删除并清空',
+    retry_count  int         default 0                 not null comment '已重试次数（达到 MAX 标记 FAILED 终止）',
+    status       tinyint     default 0                 not null comment '状态：0-待同步 1-同步成功 2-重试失败终止',
+    error_msg    text                                  null comment '最后一次失败的错误信息',
+    create_time  datetime    default CURRENT_TIMESTAMP not null comment '创建时间',
+    update_time  datetime    default CURRENT_TIMESTAMP not null on update CURRENT_TIMESTAMP comment '更新时间',
+    next_retry_at datetime(3) default CURRENT_TIMESTAMP(3) not null comment '下次可重试时间（指数退避：失败后 = NOW + min(30*2^retryCount, 600) 秒）'
 )
     comment 'ES同步发件箱表（事务性Outbox）';
 
-create index idx_outbox_status
-    on t_es_sync_outbox (status);
+-- 同一 (data_type, data_id) 允许多行：每条 enqueue 都是独立行，row.id 即 ES 外部版本号。
+-- 派发按 id ASC 顺序处理，ES external version 天然按时间序单调递增，旧写入会被 409 拒绝。
+-- next_retry_at 用 DATETIME(3)：DATETIME(0) 会把小数秒四舍五入（.797 → 下一秒），
+-- 导致刚登记的行在「同一秒内的 NOW」比较下查不出来。
+
+create index idx_outbox_status_retry
+    on t_es_sync_outbox (status, next_retry_at);
 
 create table t_goods
 (

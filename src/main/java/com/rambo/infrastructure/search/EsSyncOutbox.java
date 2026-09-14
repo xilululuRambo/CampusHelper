@@ -15,14 +15,20 @@ import java.time.LocalDateTime;
  * 要么业务数据与同步意图一起提交，要么都回滚。这样即使进程在事务提交后立即崩溃，
  * 只要事务已提交，待同步意图就已持久化，可由 XXL-JOB 兜底补偿，不再依赖内存中的异步任务。</p>
  *
- * <p>同一 {@code dataType + dataId} 只保留一行（唯一索引），后到的意图覆盖先到的：
- * 由于派发时会回源读取最新实体，多个 UPSERT 合并为一行是安全的；DELETE 会覆盖 UPSERT。</p>
+ * <p><b>每条 enqueue 都是独立的一行</b>，行 id 直接作为 ES external version：
+ * 自增 id 在单库内严格单调递增，满足 ES 「新版本必须严格大于当前版本」的要求；
+ * 多次连续 enqueue 会留下多行 PENDING，按 id ASC 顺序被派发，后到的写入天然版本更高，
+ * 旧事件会被 ES 以 409 拒绝（旧版本号更小），避免「旧数据覆盖新数据」的乱序问题。</p>
+ *
+ * <p><b>重试按指数退避</b>：派发失败时由 {@code EsSyncOutboxService.incrRetryCount}
+ * 把 {@link #nextRetryAt} 推进为 {@code NOW + min(30 * 2^retryCount, 600) 秒}（封顶 10 分钟）；
+ * {@code getWaitList} 通过 {@code next_retry_at <= NOW} 过滤冷却期内的行，避免雪崩式重投。</p>
  */
 @Data
 @TableName("t_es_sync_outbox")
 public class EsSyncOutbox {
 
-    @Schema(description = "主键")
+    @Schema(description = "主键，同时充当 ES 外部版本号（自增 id 严格单调）")
     @TableId(type = IdType.AUTO)
     private Long id;
 
@@ -34,15 +40,6 @@ public class EsSyncOutbox {
 
     @Schema(description = "操作类型 0-UPSERT 1-DELETE")
     private EsSyncOp opType;
-
-    /**
-     * ES 外部版本号（epoch 毫秒，进程内严格单调）。
-     * <p>列名用 es_version 以避开 MySQL 的 version() 函数名歧义，
-     * 同时避免被 MyBatis-Plus 乐观锁插件误识别。</p>
-     */
-    @Schema(description = "ES外部版本号（严格单调，防乱序）", hidden = true)
-    @TableField("es_version")
-    private Long esVersion;
 
     @Schema(description = "待清理的 OSS 文件（objectName），逗号分隔；ES 同步达成后删除并清空")
     private String fileUrls;
@@ -63,4 +60,13 @@ public class EsSyncOutbox {
     @Schema(description = "更新时间")
     @TableField(fill = FieldFill.INSERT_UPDATE)
     private LocalDateTime updateTime;
+
+    /**
+     * 下次可重试时间（指数退避）。
+     * <p>派发失败后由 {@code incrRetryCount} 推后为 {@code NOW + min(30*2^retryCount, 600)} 秒；
+     * 冷却期内 {@code getWaitList} 不会取到该行，避免雪崩式重投。
+     * 默认 {@code CURRENT_TIMESTAMP}，新登记的行立即可派发。</p>
+     */
+    @Schema(description = "下次可重试时间（指数退避：失败后 = NOW + min(30*2^retryCount, 600) 秒）")
+    private LocalDateTime nextRetryAt;
 }

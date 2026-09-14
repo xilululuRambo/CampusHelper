@@ -8,6 +8,19 @@ import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
 
+/**
+ * ES 文档 DTO（基础设施层抽象）。
+ *
+ * <p>作为 ES 索引文档的统一载体，由 {@code GoodsMapper}/{@code TaskMapper} 回源后
+ * 经 {@code BeanUtil.copyProperties} 装入。</p>
+ *
+ * <p><b>字段只放「要写进 ES 文档的内容」</b>——ES external version 不再由本类承载：
+ * 历史上曾有 {@code updateTime}（{@code Long}，epoch 毫秒）字段兼作版本号载体，
+ * 现已移除，版本改由调用方通过 {@link EsUtil#saveOrUpdate} 的 {@code version} 参数显式传入
+ * （值取自发件箱行 id）。移除它还有第二个理由：实体里的 {@code updateTime} 是
+ * {@link LocalDateTime}（如 {@code Task.updateTime}），{@code BeanUtil} 拷贝进来后会被
+ * ES 按既有 {@code long} 映射拒绝（{@code document_parsing_exception}）。</p>
+ */
 @Data
 @AllArgsConstructor
 @NoArgsConstructor
@@ -36,12 +49,4 @@ public class EsDTO {
 
     @Schema(description = "创建时间，用于 ES 排序")
     private LocalDateTime createTime;
-
-    /**
-     * 数据版本号（epoch 毫秒时间戳，在业务调用线程取值）。
-     * <p>作为 ES 外部版本号（external version）防乱序：同一实体并发同步时，
-     * 旧版本数据写入会被 ES 以版本冲突拒绝，避免"旧数据后到覆盖新数据"。</p>
-     */
-    @Schema(description = "数据版本号（epoch毫秒，防乱序覆盖）", hidden = true)
-    private Long updateTime;
 }

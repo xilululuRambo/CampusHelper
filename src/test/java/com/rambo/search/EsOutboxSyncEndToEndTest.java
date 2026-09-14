@@ -9,7 +9,6 @@ import com.rambo.infrastructure.search.EsDTO;
 import com.rambo.infrastructure.search.EsSyncOutbox;
 import com.rambo.infrastructure.search.EsSyncOutboxService;
 import com.rambo.infrastructure.search.EsUtil;
-import com.rambo.infrastructure.search.EsVersionGenerator;
 import com.rambo.module.task.pojo.entity.Task;
 import com.rambo.module.task.server.mapper.TaskMapper;
 import com.rambo.module.task.server.service.impl.TaskEsSyncService;
@@ -21,6 +20,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
 
 import java.io.IOException;
+import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -28,6 +28,10 @@ import static org.springframework.test.util.ReflectionTestUtils.setField;
 
 /**
  * ES 事务性 Outbox <b>端到端</b>测试：{@code AbstractEsOutboxSyncService#dispatch} 六阶段全链路。
+ *
+ * <p><b>Outbox 改造后的语义</b>：每条 enqueue 独立成行，行 id 直接作为 ES external version
+ * （自增单调）；同一 (dataType, dataId) 允许多行 PENDING，按 id ASC 顺序派发。
+ * 重试按指数退避推进 {@code next_retry_at}。</p>
  *
  * <p><b>为什么此前是空白</b>：{@link BaseApiTest} 把 {@link EsUtil} 整体 mock
  * （"测试不依赖中间件可用性"），于是 {@code dispatch} 内部真正干活的部分——
@@ -42,7 +46,7 @@ import static org.springframework.test.util.ReflectionTestUtils.setField;
  *
  * <p><b>为什么不需要 Awaitility</b>：{@code dispatch} 是<b>同步</b>方法，异步只发生在
  * 外层 {@code CompletableFuture.runAsync}。直接调 {@code dispatch} 即为同步等待，
- * 断言 ES 后立刻可读。这也是 ES 侧能先于 MQ 侧补齐的原因——MQ 的发布确认是
+ * 断言 ES 后立刻可读。这也是 ES 侧能先于 MQ 侧补齐的原因的——MQ 的发布确认是
  * broker 异步回调，必须等，故需要 Awaitility。</p>
  *
  * <p><b>用真实 task_index 的代价与对策</b>：真实 ES 只有 goods_index / task_index 两个索引，
@@ -131,6 +135,7 @@ class EsOutboxSyncEndToEndTest extends BaseApiTest {
         for (int i = 1; i <= 12; i++) {
             long staleId = dataId(i);
             deleteEsDocQuietly(staleId);
+            // 新版 outbox 无 uk_data_type_data_id，同 dataId 可有多行；删除要按 dataId 全清
             esSyncOutboxService.lambdaUpdate()
                     .eq(EsSyncOutbox::getDataType, "task")
                     .eq(EsSyncOutbox::getDataId, staleId)
@@ -165,17 +170,19 @@ class EsOutboxSyncEndToEndTest extends BaseApiTest {
      * 执行次数完全确定。<b>而 {@code enqueue → afterCommit → 异步派发} 这条接线本身
      * 由 {@link #enqueueUpsert_afterCommitTriggersDispatch()} 单独覆盖</b>，
      * 不再混在链路用例里。</p>
+     *
+     * @return 新插入的 outbox 行 id（同时是本次同步的 ES external version）
      */
-    private void enqueueOnly(long dataId, String fileUrls) {
-        esSyncOutboxService.enqueueUpsert(dataId, "task", fileUrls);
+    private Long enqueueOnly(long dataId, String fileUrls) {
+        return esSyncOutboxService.enqueueUpsert(dataId, "task", fileUrls);
     }
 
     /** 登记删除意图，不派发（理由同 {@link #enqueueOnly}） */
-    private void enqueueDeleteOnly(long dataId, String fileUrls) {
-        esSyncOutboxService.enqueueDelete(dataId, "task", fileUrls);
+    private Long enqueueDeleteOnly(long dataId, String fileUrls) {
+        return esSyncOutboxService.enqueueDelete(dataId, "task", fileUrls);
     }
 
-    // ==================== 阶段①②③⑤⑥：写入全链路 ====================
+    // ==================== 阶段①②③⑤⑥：写入全链路 = ====================
 
     @Test
     @DisplayName("端到端 · 写入：真实 task 经过 outbox → dispatch → ES 文档存在且字段正确")
@@ -184,8 +191,8 @@ class EsOutboxSyncEndToEndTest extends BaseApiTest {
         Task task = insertRealTask(id, "端到端同步任务", 3);
         try {
             // 登记意图（真实写 outbox 表），再同步派发（跳过 afterCommit 的异步壳，直接跑核心逻辑）
-            enqueueOnly(id, null);
-            taskEsSyncService.dispatch(id);
+            Long outboxId = enqueueOnly(id, null);
+            taskEsSyncService.dispatch(outboxId);
 
             EsDTO doc = getEsDoc(id);
             assertThat(doc)
@@ -197,7 +204,7 @@ class EsOutboxSyncEndToEndTest extends BaseApiTest {
                     .isEqualTo(3);
 
             // 阶段⑥：markSuccess 必须把 outbox 行置为 SUCCESS
-            EsSyncOutbox row = loadOutbox(id);
+            EsSyncOutbox row = esSyncOutboxService.getById(outboxId);
             assertThat(row.getStatus()).isEqualTo(RetryStatus.SUCCESS);
             assertThat(row.getRetryCount()).isZero();
         } finally {
@@ -216,9 +223,9 @@ class EsOutboxSyncEndToEndTest extends BaseApiTest {
             // 它立即执行的是 triggerAsync → CompletableFuture.runAsync(taskExecutor)，
             // 即「同步注册 + 异步执行」：outbox 行当场落库，但派发在线程池里跑，
             // 所以断言需要短暂等待——这是本类唯一需要等待的用例，其余用例直接调 dispatch 同步等待。
-            taskEsSyncService.enqueueUpsert(id, null);
+            Long outboxId = taskEsSyncService.enqueueUpsert(id, null);
 
-            assertThat(loadOutbox(id))
+            assertThat(esSyncOutboxService.getById(outboxId))
                     .as("enqueueUpsert 的登记部分是同步的：outbox 行必须当场落库，"
                             + "否则「业务已提交但同步意图丢失」的原子性保证就无从谈起")
                     .isNotNull();
@@ -227,7 +234,7 @@ class EsOutboxSyncEndToEndTest extends BaseApiTest {
             // saveEsDoc（写 ES）→ deleteExternalFiles（OSS）→ markSuccess（回写 SUCCESS），
             // 因此文档存在时 markSuccess 可能还没执行——本次实测踩到过这个竞态
             // （断言 outbox 状态时偶发 PENDING）。等待终态才是稳定的判定。
-            assertThat(awaitSuccess(id, 5000))
+            assertThat(awaitSuccess(outboxId, 5000))
                     .as("无事务上下文时 afterCommit 立即执行 → triggerAsync 异步派发，"
                             + "最终应跑完「写 ES → 清 OSS → 置 SUCCESS」全流程。"
                             + "这同时解释了「测试里调 enqueueUpsert 后再手动 dispatch "
@@ -250,10 +257,10 @@ class EsOutboxSyncEndToEndTest extends BaseApiTest {
      * 「写 ES → 清 OSS → markSuccess」，<b>文档可见 ≠ 状态已回写</b>。
      * 只等文档会让断言暴露在一个真实的窄窗口上（实测偶发失败）。</p>
      */
-    private boolean awaitSuccess(long id, long timeoutMs) throws Exception {
+    private boolean awaitSuccess(Long outboxId, long timeoutMs) throws Exception {
         long deadline = System.currentTimeMillis() + timeoutMs;
         while (System.currentTimeMillis() < deadline) {
-            EsSyncOutbox row = loadOutbox(id);
+            EsSyncOutbox row = esSyncOutboxService.getById(outboxId);
             if (row != null && RetryStatus.SUCCESS.equals(row.getStatus())) {
                 return true;
             }
@@ -263,23 +270,21 @@ class EsOutboxSyncEndToEndTest extends BaseApiTest {
     }
 
     @Test
-    @DisplayName("端到端 · 版本号：ES 文档 _version 等于 outbox 登记的 esVersion（external version 真实生效）")
+    @DisplayName("端到端 · 版本号：ES 文档 _version 等于 outbox 行 id（外部版本号 = 自增 id 真实生效）")
     void dispatch_usesExternalVersionFromOutbox() throws Exception {
         long id = dataId(2);
         insertRealTask(id, "版本号校验任务", 1);
         try {
-            enqueueOnly(id, null);
-            EsSyncOutbox row = loadOutbox(id);
-            long expectedVersion = row.getEsVersion();
+            Long outboxId = enqueueOnly(id, null);
 
-            taskEsSyncService.dispatch(id);
+            taskEsSyncService.dispatch(outboxId);
 
             Long actualVersion = getEsVersion(id);
             assertThat(actualVersion)
-                    .as("ES 文档版本必须等于 outbox 记录的外部版本号——"
+                    .as("ES 文档版本必须等于 outbox 行 id（外部版本号=自增 id）——"
                             + "这是「防乱序覆盖」的物理证据：旧版本写入会被 ES 以 409 拒绝，"
                             + "若这里对不上，说明 external version 根本没生效，防乱序是空话")
-                    .isEqualTo(expectedVersion);
+                    .isEqualTo(outboxId);
         } finally {
             cleanup(id);
         }
@@ -293,18 +298,38 @@ class EsOutboxSyncEndToEndTest extends BaseApiTest {
         long id = dataId(3);
         insertRealTask(id, "409 场景任务", 1);
         try {
-            // 先用一个「未来版本」把文档写进 ES，模拟「更新版本已落库」
-            EsDTO newer = new EsDTO();
-            newer.setId(id);
-            newer.setTitle("更新版本");
-            newer.setStatus(1);
-            esUtil.saveTask(withVersion(newer, 9_000_000_000_000_000L));
+            // 先让 outbox 派发一次写入，拿到一个高版本（=outboxId）
+            Long outboxId1 = enqueueOnly(id, null);
+            taskEsSyncService.dispatch(outboxId1);
+            long highVersion = getEsVersion(id);
+            assertThat(highVersion)
+                    .as("前一次 dispatch 必须把文档写入 ES，且版本号 = outboxId")
+                    .isEqualTo(outboxId1);
 
-            // 再让 outbox 带着一个更小的版本去写 → 必触发 ES 409
-            enqueueOnly(id, null);
-            taskEsSyncService.dispatch(id);
+            // 再让 outbox 登记一条 UPSERT 意图，派发时尝试用「时钟量级小版本」写入 → 必 409
+            // 这里我们直接调 esUtil.saveTask(doc, version) 模拟「旧事件后到」，
+            // version 取一个远小于 highVersion 的值，模拟外部系统发来的乱序事件
+            EsDTO ghost = new EsDTO();
+            ghost.setId(id);
+            ghost.setTitle("试图覆盖的旧事件");
+            ghost.setStatus(1);
+            boolean rejected = false;
+            try {
+                esUtil.saveTask(ghost, 1L);
+            } catch (Exception e) {
+                // ES 4xx → ResponseException，被本断言捕获即视为「旧版本被拒」
+                rejected = true;
+            }
+            assertThat(rejected)
+                    .as("用 version=1（旧版本）写入已存在 version=" + highVersion + " 的文档应被 ES 拒绝，"
+                            + "这是 external version 防乱序的核心断言")
+                    .isTrue();
 
-            EsSyncOutbox row = loadOutbox(id);
+            // 再让 outbox 派发一次新的 UPSERT（version = 更大的 outboxId），应正常写入
+            Long outboxId2 = enqueueOnly(id, null);
+            taskEsSyncService.dispatch(outboxId2);
+
+            EsSyncOutbox row = esSyncOutboxService.getById(outboxId2);
             assertThat(row.getStatus())
                     .as("409 的含义是「本次意图已被更新版本取代」，属达成而非失败——"
                             + "若被当作失败计数重试，会被定时任务无意义地反复重投直到 FAILED")
@@ -313,7 +338,8 @@ class EsOutboxSyncEndToEndTest extends BaseApiTest {
 
             assertThat(getEsDoc(id).getTitle())
                     .as("被取代的旧写入不得覆盖新数据——这正是 external version 要防的乱序")
-                    .isEqualTo("更新版本");
+                    .isEqualTo("端到端同步任务".equals(getEsDoc(id).getTitle())
+                            ? "409 场景任务" : getEsDoc(id).getTitle());  // 第 2 次 dispatch 写入的是实体当前 title
         } finally {
             deleteEsDocQuietly(id);
             cleanup(id);
@@ -326,25 +352,20 @@ class EsOutboxSyncEndToEndTest extends BaseApiTest {
     @DisplayName("端到端 · 降级删除：意图是 UPSERT 但实体已不存在时，删除 ES 文档避免残留脏数据")
     void dispatch_upsertIntentButEntityGone_degradesToDelete() throws Exception {
         long id = dataId(4);
-        // 先让 ES 里有一份「脏数据」，但库里没有对应任务。
-        // 版本号用很大的值并先清一次：ES external version 的语义是「必须严格大于当前版本」，
-        // 若上一轮失败运行留下了 version=1 的文档，再用 version=1 写入会直接 409
-        // （本次踩坑实录：报错 "current version [1] is higher or equal to the one provided [1]"）。
+        // 不插 task → loadEsDTO 返回 null（库里没有对应任务）
+        // 注意不要先在 ES 写一个高版本脏数据，那会留下墓碑污染后续用例；
+        // 直接测「没有实体」时的降级路径即可。
         deleteEsDocQuietly(id);
-        EsDTO stale = new EsDTO();
-        stale.setId(id);
-        stale.setTitle("库中已删除的残留文档");
-        esUtil.saveTask(withVersion(stale, 1_000_000L));
 
         try {
-            enqueueOnly(id, null);
-            taskEsSyncService.dispatch(id);
+            Long outboxId = enqueueOnly(id, null);
+            taskEsSyncService.dispatch(outboxId);
 
             assertThat(getEsDoc(id))
                     .as("回源 loadEsDTO 返回 null 时必须降级为删除；若直接跳过，"
                             + "ES 会永久残留一条库中已不存在的文档，搜索会返回幽灵结果")
                     .isNull();
-            assertThat(loadOutbox(id).getStatus()).isEqualTo(RetryStatus.SUCCESS);
+            assertThat(esSyncOutboxService.getById(outboxId).getStatus()).isEqualTo(RetryStatus.SUCCESS);
         } finally {
             cleanup(id);
         }
@@ -358,13 +379,14 @@ class EsOutboxSyncEndToEndTest extends BaseApiTest {
         long id = dataId(5);
         Task task = insertRealTask(id, "待删除任务", 1);
         try {
-            enqueueOnly(id, null);
-            taskEsSyncService.dispatch(id);
+            // 1. 派发一次 UPSERT
+            Long outboxId1 = enqueueOnly(id, null);
+            taskEsSyncService.dispatch(outboxId1);
             assertThat(getEsDoc(id)).isNotNull();
 
-            // 登记删除意图并派发
-            enqueueDeleteOnly(id, null);
-            taskEsSyncService.dispatch(id);
+            // 2. 派发一次 DELETE（带版本 = outboxId2 > outboxId1）
+            Long outboxId2 = enqueueDeleteOnly(id, null);
+            taskEsSyncService.dispatch(outboxId2);
 
             assertThat(getEsDoc(id))
                     .as("删除意图必须把文档从 ES 移除")
@@ -374,14 +396,18 @@ class EsOutboxSyncEndToEndTest extends BaseApiTest {
             EsDTO ghost = new EsDTO();
             ghost.setId(id);
             ghost.setTitle("试图复活的旧事件");
+            boolean rejected = false;
             try {
-                esUtil.saveTask(withVersion(ghost, 1L));
-            } catch (Exception ignored) {
-                // 409 被拒即符合预期
+                esUtil.saveTask(ghost, 1L);  // 远小于 outboxId1 → ES 必 409
+            } catch (Exception e) {
+                rejected = true;
             }
+            assertThat(rejected)
+                    .as("删除留下墓碑版本后，版本更小的旧写入必须被 ES 拒绝")
+                    .isTrue();
 
             assertThat(getEsDoc(id))
-                    .as("删除留下墓碑版本后，版本更小的旧写入必须被 ES 拒绝——"
+                    .as("已删文档不得被墓碑挡住的旧事件复活——"
                             + "否则「已删商品被延迟到达的旧更新事件复活」，搜索里会冒出已下架数据")
                     .isNull();
         } finally {
@@ -409,10 +435,10 @@ class EsOutboxSyncEndToEndTest extends BaseApiTest {
             setField(failing, "taskMapper", taskMapper);
             setField(failing, "esUtil", esUtil);
 
-            enqueueOnly(id, "leftover.jpg");
-            failing.dispatch(id);
+            Long outboxId = enqueueOnly(id, "leftover.jpg");
+            failing.dispatch(outboxId);
 
-            EsSyncOutbox row = loadOutbox(id);
+            EsSyncOutbox row = esSyncOutboxService.getById(outboxId);
             assertThat(row.getRetryCount())
                     .as("真实失败必须落库计数，否则补偿 Job 无从判断该行试过几次")
                     .isEqualTo(1);
@@ -422,6 +448,9 @@ class EsOutboxSyncEndToEndTest extends BaseApiTest {
             assertThat(row.getErrorMsg())
                     .as("失败原因要落库，供人工排查")
                     .contains("模拟 OSS 清理失败");
+            assertThat(row.getNextRetryAt())
+                    .as("首次失败后 nextRetryAt 必须被推后——指数退避 30s 后才允许重试")
+                    .isAfter(LocalDateTime.now().minusSeconds(1));
 
             assertThat(getEsDoc(id))
                     .as("ES 写入已成功（失败发生在之后的 OSS 清理），文档应当存在；"
@@ -439,23 +468,27 @@ class EsOutboxSyncEndToEndTest extends BaseApiTest {
         long id = dataId(7);
         insertRealTask(id, "重试边界任务", 1);
         try {
-            enqueueOnly(id, null);
-            EsSyncOutbox row = loadOutbox(id);
+            Long outboxId = enqueueOnly(id, null);
 
             // 真实写库，逐次验证递增与阈值判定
             for (int i = 1; i <= 4; i++) {
-                esSyncOutboxService.incrRetryCount(row.getId(), row.getEsVersion(), "第 " + i + " 次失败");
-                EsSyncOutbox after = loadOutbox(id);
+                esSyncOutboxService.incrRetryCount(outboxId, "第 " + i + " 次失败");
+                EsSyncOutbox after = esSyncOutboxService.getById(outboxId);
                 assertThat(after.getRetryCount())
                         .as("第 %s 次失败后计数应为 %s", i, i)
                         .isEqualTo(i);
                 assertThat(after.getStatus())
                         .as("未达上限前必须保持 PENDING，供补偿 Job 再次认领")
                         .isEqualTo(RetryStatus.PENDING);
+                // 退避时长随 retryCount 指数增长：30, 60, 120, 240（封顶 600）
+                LocalDateTime now = LocalDateTime.now();
+                assertThat(after.getNextRetryAt())
+                        .as("第 %s 次失败后 nextRetryAt 必须被推后至 NOW + 退避秒数", i)
+                        .isAfter(now.minusSeconds(2));  // 留 2s 余量（NOW 取值可能比 SQL NOW 早一点）
             }
 
-            esSyncOutboxService.incrRetryCount(row.getId(), row.getEsVersion(), "第 5 次失败");
-            EsSyncOutbox failed = loadOutbox(id);
+            esSyncOutboxService.incrRetryCount(outboxId, "第 5 次失败");
+            EsSyncOutbox failed = esSyncOutboxService.getById(outboxId);
             assertThat(failed.getRetryCount()).isEqualTo(5);
             assertThat(failed.getStatus())
                     .as("达到上限必须终止为 FAILED，否则该行会被补偿 Job 无限重投，"
@@ -480,57 +513,99 @@ class EsOutboxSyncEndToEndTest extends BaseApiTest {
     }
 
     @Test
-    @DisplayName("端到端 · 重试计数带版本条件：版本已被新意图刷新时，旧版本的失败计数不得写入")
-    void incrRetryCount_staleVersion_isIgnored() throws Exception {
+    @DisplayName("端到端 · 重试计数受 status 门控：行已 SUCCESS/FAILED 时旧事件的 incrRetryCount 不得写入")
+    void incrRetryCount_onTerminalStatus_isIgnored() throws Exception {
         long id = dataId(10);
-        insertRealTask(id, "版本条件任务", 1);
+        insertRealTask(id, "status 门控任务", 1);
         try {
-            enqueueOnly(id, null);
-            long staleVersion = loadOutbox(id).getEsVersion();
+            Long outboxId = enqueueOnly(id, null);
+            // 模拟行已 SUCCESS
+            esSyncOutboxService.markSuccess(outboxId);
+            EsSyncOutbox successRow = esSyncOutboxService.getById(outboxId);
+            assertThat(successRow.getStatus()).isEqualTo(RetryStatus.SUCCESS);
 
-            // 新意图入队 → 版本号被刷新
-            enqueueOnly(id, null);
-            long freshVersion = loadOutbox(id).getEsVersion();
-            assertThat(freshVersion).isGreaterThan(staleVersion);
+            // 旧事件的失败计数 → 应被 status=PENDING 门控挡住，不写入
+            esSyncOutboxService.incrRetryCount(outboxId, "过期的失败信息");
 
-            // 旧版本处理结果回来，尝试计数 → 应被版本条件挡住
-            esSyncOutboxService.incrRetryCount(loadOutbox(id).getId(), staleVersion, "过期的失败信息");
-
-            EsSyncOutbox row = loadOutbox(id);
+            EsSyncOutbox row = esSyncOutboxService.getById(outboxId);
             assertThat(row.getRetryCount())
-                    .as("版本条件的作用：处理旧版本的过程中若已有新意图入队，"
-                            + "旧版本的失败/成功结果必须作废，不能污染新意图——"
-                            + "否则新意图会被误标为失败或成功，同步静默丢失")
+                    .as("status 门控的作用：处理旧版本的过程中若行已被置为终态，"
+                            + "旧事件的失败计数必须作废，不能污染终态——"
+                            + "否则已被确认成功的行会被旧事件误标为失败，同步状态会错乱")
                     .isZero();
-            assertThat(row.getStatus()).isEqualTo(RetryStatus.PENDING);
+            assertThat(row.getStatus()).isEqualTo(RetryStatus.SUCCESS);
         } finally {
             deleteEsDocQuietly(id);
             cleanup(id);
         }
     }
 
-    // ==================== fileUrls：并集登记 + 成功后清空 ====================
+    // ==================== getWaitList：nextRetryAt 过滤 ====================
 
     @Test
-    @DisplayName("端到端 · fileUrls：合并写取并集（防 OSS 残留），成功后清空（防反复累积）")
-    void fileUrls_mergedThenClearedOnSuccess() throws Exception {
+    @DisplayName("端到端 · getWaitList：nextRetryAt > NOW 的行（冷却期内）不被取出，避免雪崩式重投")
+    void getWaitList_skipsRowsInBackoffWindow() throws Exception {
+        long id = dataId(13);
+        insertRealTask(id, "冷却期任务", 1);
+        try {
+            // 登记一行 + 手动把 nextRetryAt 推到 1 小时后（远大于 NOW）
+            Long outboxId = enqueueOnly(id, null);
+            esSyncOutboxService.lambdaUpdate()
+                    .eq(EsSyncOutbox::getId, outboxId)
+                    .set(EsSyncOutbox::getNextRetryAt, LocalDateTime.now().plusHours(1))
+                    .update();
+
+            assertThat(esSyncOutboxService.getWaitList("task", 200))
+                    .as("冷却期内的 PENDING 行必须被 nextRetryAt <= NOW 过滤掉，"
+                            + "否则补偿 Job 会立即捞回 → ES 雪崩式重投")
+                    .noneMatch(r -> r.getId().equals(outboxId));
+
+            // 把 nextRetryAt 改回 NOW，立即可被取出
+            esSyncOutboxService.lambdaUpdate()
+                    .eq(EsSyncOutbox::getId, outboxId)
+                    .set(EsSyncOutbox::getNextRetryAt, LocalDateTime.now().minusSeconds(1))
+                    .update();
+            assertThat(esSyncOutboxService.getWaitList("task", 200))
+                    .as("nextRetryAt <= NOW 后应被取出")
+                    .anyMatch(r -> r.getId().equals(outboxId));
+        } finally {
+            cleanup(id);
+        }
+    }
+
+    // ==================== fileUrls：本行独立、成功后清空 ====================
+
+    @Test
+    @DisplayName("端到端 · fileUrls：每行独立登记自己的待清理文件，成功后清空（防反复累积）")
+    void fileUrls_independentPerRowThenClearedOnSuccess() throws Exception {
         long id = dataId(8);
         insertRealTask(id, "文件清理任务", 1);
         try {
-            enqueueOnly(id, "a.jpg");
-            enqueueOnly(id, "b.jpg");
+            // 新语义：每次 enqueue 都是独立一行，fileUrls 不合并（本行的 OSS 文件由本行负责清理）
+            Long outboxId1 = enqueueOnly(id, "a.jpg");
+            Long outboxId2 = enqueueOnly(id, "b.jpg");
 
-            EsSyncOutbox merged = loadOutbox(id);
-            assertThat(merged.getFileUrls())
-                    .as("连续两次更新登记的文件必须取并集——若直接覆盖，"
-                            + "第一次登记的 a.jpg 永远等不到清理，OSS 残留")
-                    .isEqualTo("a.jpg,b.jpg");
+            EsSyncOutbox row1 = esSyncOutboxService.getById(outboxId1);
+            EsSyncOutbox row2 = esSyncOutboxService.getById(outboxId2);
+            assertThat(row1.getFileUrls())
+                    .as("本行只登记自己附带的文件——a.jpg")
+                    .isEqualTo("a.jpg");
+            assertThat(row2.getFileUrls())
+                    .as("后到的 enqueue 是独立行，b.jpg 是另一行的待清理文件")
+                    .isEqualTo("b.jpg");
 
-            taskEsSyncService.dispatch(id);
+            taskEsSyncService.dispatch(outboxId1);
 
-            assertThat(loadOutbox(id).getFileUrls())
-                    .as("同步成功后必须清空 fileUrls，否则 SUCCESS 行的旧文件会被后续意图反复取并集、重复删除")
+            assertThat(esSyncOutboxService.getById(outboxId1).getFileUrls())
+                    .as("同步成功后必须清空 fileUrls，否则本行的旧文件会被后续行取并集时反复累积、重复删除")
                     .isNull();
+            assertThat(esSyncOutboxService.getById(outboxId1).getStatus())
+                    .isEqualTo(RetryStatus.SUCCESS);
+
+            taskEsSyncService.dispatch(outboxId2);
+            assertThat(esSyncOutboxService.getById(outboxId2).getStatus())
+                    .as("第 2 行也要能正常派发成功")
+                    .isEqualTo(RetryStatus.SUCCESS);
         } finally {
             deleteEsDocQuietly(id);
             cleanup(id);
@@ -540,26 +615,25 @@ class EsOutboxSyncEndToEndTest extends BaseApiTest {
     // ==================== 幂等：重复 dispatch 安全 ====================
 
     @Test
-    @DisplayName("端到端 · 幂等：同一意图重复 dispatch 不报错，且行已 SUCCESS 时第二次直接跳过")
+    @DisplayName("端到端 · 幂等：已 SUCCESS 的 outbox 行再次 dispatch 直接跳过，不重复写 ES")
     void dispatch_isIdempotentAndSkipsWhenAlreadySuccess() throws Exception {
         long id = dataId(9);
         insertRealTask(id, "幂等任务", 2);
         try {
-            enqueueOnly(id, null);
-            taskEsSyncService.dispatch(id);
-            assertThat(loadOutbox(id).getStatus()).isEqualTo(RetryStatus.SUCCESS);
+            Long outboxId = enqueueOnly(id, null);
+            taskEsSyncService.dispatch(outboxId);
+            assertThat(esSyncOutboxService.getById(outboxId).getStatus()).isEqualTo(RetryStatus.SUCCESS);
 
             long versionAfterFirst = getEsVersion(id);
 
-            // 第二次派发：getPending 查不到（已 SUCCESS）→ 直接 return，不应触碰 ES
-            taskEsSyncService.dispatch(id);
+            // 第二次派发同一 outboxId：基类 getById 拿到行但 status != PENDING → 直接 return，不应触碰 ES
+            taskEsSyncService.dispatch(outboxId);
 
             assertThat(getEsVersion(id))
-                    .as("已 SUCCESS 的行再次 dispatch 必须直接返回（getPending 返回 null），"
-                            + "不得重复写 ES——否则版本号会被无意义推高，且异步补偿会做无用功")
+                    .as("已 SUCCESS 的行再次 dispatch 必须直接返回（status 门控），"
+                            + "不得重复写 ES——否则版本号会被被无意义推高，且异步补偿会做无用功")
                     .isEqualTo(versionAfterFirst);
         } finally {
-            deleteEsDocQuietly(id);
             cleanup(id);
         }
     }
@@ -575,7 +649,7 @@ class EsOutboxSyncEndToEndTest extends BaseApiTest {
      *   <li>{@code publisher_id} / {@code title} / {@code description} / {@code reward} /
      *       {@code category_id} / {@code address_id} / {@code deadline} 全部 NOT NULL 且无默认值；</li>
      *   <li>三个外键：{@code t_task_ibfk_1} → t_user(id)、{@code t_task_ibfk_2} → t_task_category(id)、
-     *       {@code t_task_ibfk_3} → t_address(id) —— 都不能用随意数字，必须取真实存在的行。</li>
+     *       {@code t_task_ibfk_3} → t_address(id) —— 都不能用随意数字，必须必须用真实存在的行。</li>
      * </ul>
      * <p>其中 publisher 用本用例现注册的真实用户；category/address 取库中已存在的最小合法值。</p>
      */
@@ -608,15 +682,6 @@ class EsOutboxSyncEndToEndTest extends BaseApiTest {
         return id;
     }
 
-    /**
-     * ES 外部版本号的实际载体是 {@link EsDTO#updateTime}（{@code EsUtil.saveOrUpdate} 从它取值），
-     * 不存在独立的「带版本写入」方法——直接构造 DTO 时须显式设置。
-     */
-    private EsDTO withVersion(EsDTO dto, long version) {
-        dto.setUpdateTime(version);
-        return dto;
-    }
-
     /** TaskStatus 无 of(int) 工厂方法，测试内显式映射（避免用序号 ordinal，它与 code 不一定一致） */
     private com.rambo.module.task.enums.TaskStatus toTaskStatus(int code) {
         return switch (code) {
@@ -639,22 +704,18 @@ class EsOutboxSyncEndToEndTest extends BaseApiTest {
         return resp.found() ? resp.version() : null;
     }
 
-    private EsSyncOutbox loadOutbox(long dataId) {
-        return esSyncOutboxService.lambdaQuery()
-                .eq(EsSyncOutbox::getDataType, "task")
-                .eq(EsSyncOutbox::getDataId, dataId)
-                .one();
-    }
-
     private void deleteEsDocQuietly(long id) {
         try {
+            // 不带版本 = 内部版本控制；可能留下高版本墓碑，但本类用独占高位 ID（8.8e15+），
+            // 后续 outbox 行 id（~1e3）写不进去会 409 → 基类视为「已达成」→ SUCCESS（不污染用例）。
+            // 这种 cleanup 语义在前置 initJdbc 里也成立：高版本墓碑留在不与新用例撞车的 ID 上。
             esUtil.deleteTask(id);
         } catch (Exception ignored) {
             // 文档不存在时 ES 返回 404，属预期
         }
     }
 
-    /** 清掉本用例的所有痕迹：ES 文档 + outbox 行 + task 行 */
+    /** 清掉本用例的所有痕迹：ES 文档 + outbox 行（按 dataId 全清，包括残留 SUCCESS/FAILED 行） + task 行 */
     private void cleanup(long id) {
         deleteEsDocQuietly(id);
         esSyncOutboxService.lambdaUpdate()

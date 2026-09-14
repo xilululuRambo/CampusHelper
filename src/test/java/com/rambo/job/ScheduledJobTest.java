@@ -104,6 +104,13 @@ class ScheduledJobTest extends BaseApiTest {
     void prepare() {
         jdbc = new JdbcTemplate(dataSource);
         baseId = 9_900_000_000_000_000L + (System.nanoTime() % 1_000_000L);
+        // 新语义下同 (data_type, data_id) 允许多行；跨测试类运行后 PENDING 行会持续累积，
+        // getWaitList 会把它们和本用例新建的行一起返回 → XXL-JOB 全部 dispatch → 破坏 verify 计数。
+        // 在本类 setup 阶段清掉所有 PENDING 残留，让本类真正只面对自己登记的行
+        // （SUCCESS/FAILED 是终态，不影响 getWaitList，不动它们）。
+        esSyncOutboxService.lambdaUpdate()
+                .eq(EsSyncOutbox::getStatus, RetryStatus.PENDING)
+                .remove();
     }
 
     // ==================== GoodsEsRetryJob / TaskEsRetryJob ====================
@@ -117,9 +124,10 @@ class ScheduledJobTest extends BaseApiTest {
 
         goodsEsRetryJob.execute();
 
-        verify(goodsEsSyncService, times(1)).dispatch(baseId);
-        verify(goodsEsSyncService, never()).dispatch(baseId + 1);
-        verify(goodsEsSyncService, never()).dispatch(baseId + 2);
+        // 新语义：dispatch 收 outbox 行 id（不再是 dataId），按 outbox 行精确派发
+        verify(goodsEsSyncService, times(1)).dispatch(goodsRow.getId());
+        verify(goodsEsSyncService, never()).dispatch(taskRow.getId());
+        verify(goodsEsSyncService, never()).dispatch(goodsDone.getId());
         // 关键断言：goods Job 绝不能误派 task 行——dataType 过滤是「各 Job 只管家自己数据」的边界
         verify(taskEsSyncService, never()).dispatch(anyLong());
 
@@ -134,8 +142,8 @@ class ScheduledJobTest extends BaseApiTest {
 
         taskEsRetryJob.execute();
 
-        verify(taskEsSyncService, times(1)).dispatch(baseId + 10);
-        verify(taskEsSyncService, never()).dispatch(baseId + 11);
+        verify(taskEsSyncService, times(1)).dispatch(taskRow.getId());
+        verify(taskEsSyncService, never()).dispatch(goodsRow.getId());
         verify(goodsEsSyncService, never()).dispatch(anyLong());
 
         cleanupOutbox(taskRow.getId(), goodsRow.getId());
@@ -148,15 +156,16 @@ class ScheduledJobTest extends BaseApiTest {
         EsSyncOutbox second = enqueueOutbox("goods", baseId + 21, RetryStatus.PENDING);
 
         // 第一条失败、第二条正常——模拟「某个商品回源时数据异常」这类局部故障
+        // 新语义：dispatch(outboxId)，按 first.getId() 精确打桩
         doAnswer(inv -> {
             throw new IllegalStateException("模拟 dispatch 内部异常");
-        }).when(goodsEsSyncService).dispatch(baseId + 20);
+        }).when(goodsEsSyncService).dispatch(first.getId());
 
         // 不得抛出：Job 内部 try-catch 逐条隔离，否则一条坏数据会让整批待同步行永远卡住
         goodsEsRetryJob.execute();
 
-        verify(goodsEsSyncService).dispatch(baseId + 20);
-        verify(goodsEsSyncService, times(1)).dispatch(baseId + 21);
+        verify(goodsEsSyncService).dispatch(first.getId());
+        verify(goodsEsSyncService, times(1)).dispatch(second.getId());
 
         cleanupOutbox(first.getId(), second.getId());
     }
@@ -640,9 +649,11 @@ class ScheduledJobTest extends BaseApiTest {
         row.setDataId(dataId);
         row.setDataType(dataType);
         row.setOpType(com.rambo.common.enumType.EsSyncOp.UPSERT);
-        row.setEsVersion(System.currentTimeMillis());
         row.setRetryCount(0);
         row.setStatus(status);
+        // 新语义下 outbox id 即 ES 外部版本号，无需单独存 esVersion；
+        // nextRetryAt 置为 NOW（截断到毫秒，与列 DATETIME(3) 对齐）让行立即可派发
+        row.setNextRetryAt(java.time.LocalDateTime.now().truncatedTo(java.time.temporal.ChronoUnit.MILLIS));
         esSyncOutboxService.save(row);
         return row;
     }

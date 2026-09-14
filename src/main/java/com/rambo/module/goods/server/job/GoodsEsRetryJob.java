@@ -49,9 +49,10 @@ public class GoodsEsRetryJob {
         List<EsSyncOutbox> pending = esSyncOutboxService.getWaitList(PrefixConstants.GOODS_TYPE, OUTBOX_BATCH_LIMIT);
         for (EsSyncOutbox row : pending) {
             try {
-                goodsEsSyncService.dispatch(row.getDataId());
+                // 按 outbox 行 id 精确派发：每行 id 唯一，对应一次具体的同步意图
+                goodsEsSyncService.dispatch(row.getId());
             } catch (Exception e) {
-                log.error("商品发件箱派发异常，dataId：{}", row.getDataId(), e);
+                log.error("商品发件箱派发异常，outboxId：{}", row.getId(), e);
             }
         }
         return pending.size();

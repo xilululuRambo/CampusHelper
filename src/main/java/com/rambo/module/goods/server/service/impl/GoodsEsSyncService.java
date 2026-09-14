@@ -20,6 +20,9 @@ import java.util.List;
  * <p>同步逻辑收敛到基础设施层基类 {@link AbstractEsOutboxSyncService}，本类只负责
  * 「商品领域」的三件事：数据类型标识、回源加载商品、以及商品索引的读写原语。
  * 由于回源用 {@link GoodsMapper}（而非 GoodsService），避免了与 GoodsServiceImpl 的循环依赖。</p>
+ *
+ * <p>ES external version 由发件箱行 id 担任——基类 {@link AbstractEsOutboxSyncService#dispatch}
+ * 把 row.id 作为 {@code version} 传下来，本类再透传给 {@link EsUtil#saveGoods}。</p>
  */
 @Component
 @Slf4j
@@ -53,8 +56,8 @@ public class GoodsEsSyncService extends AbstractEsOutboxSyncService {
     }
 
     @Override
-    protected void saveEsDoc(EsDTO esDTO) throws Exception {
-        esUtil.saveGoods(esDTO);
+    protected void saveEsDoc(EsDTO esDTO, long version) throws Exception {
+        esUtil.saveGoods(esDTO, version);
     }
 
     @Override

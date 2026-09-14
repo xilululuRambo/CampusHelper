@@ -2,6 +2,7 @@ package com.rambo.infrastructure.search;
 
 import co.elastic.clients.elasticsearch._types.ElasticsearchException;
 import com.rambo.common.enumType.EsSyncOp;
+import com.rambo.common.enumType.RetryStatus;
 import com.rambo.infrastructure.database.TransactionUtils;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
@@ -22,6 +23,9 @@ import java.util.concurrent.Executor;
  *
  * <p>子类只需实现三件事：数据类型标识、回源加载实体（转 {@link EsDTO}）、以及 ES 读写原语。
  * 基类不感知任何业务实体，保持「基础设施 → 业务」零依赖的架构约束。</p>
+ *
+ * <p><b>版本号 = outbox 行 id</b>：发件箱 id 自增单调，作为 ES external version 直接传入；
+ * 后到的写入天然版本更高，旧事件会被 ES 以 409 拒绝，避免「旧数据覆盖新数据」的乱序问题。</p>
  */
 @Slf4j
 public abstract class AbstractEsOutboxSyncService {
@@ -40,59 +44,66 @@ public abstract class AbstractEsOutboxSyncService {
      */
     protected abstract EsDTO loadEsDTO(Long dataId);
 
-    /** 写入/更新 ES 文档；{@link EsDTO#getUpdateTime()} 已由基类置为本次版本号 */
-    protected abstract void saveEsDoc(EsDTO esDTO) throws Exception;
+    /** 写入/更新 ES 文档，{@code version} 为 ES external version（由基类传入发件箱行 id） */
+    protected abstract void saveEsDoc(EsDTO esDTO, long version) throws Exception;
 
     /** 按外部版本号删除 ES 文档 */
     protected abstract void deleteEsDoc(Long dataId, long version) throws Exception;
 
     /**
      * 业务事务内登记一次「写入/更新」意图，提交后异步派发。
+     *
+     * @return 新插入的发件箱行 id（供调用方在测试/排障场景下精确派发）
      */
-    public void enqueueUpsert(Long dataId, String fileUrls) {
-        esSyncOutboxService.enqueueUpsert(dataId, dataType(), fileUrls);
-        TransactionUtils.afterCommit(() -> triggerAsync(dataId));
+    public Long enqueueUpsert(Long dataId, String fileUrls) {
+        Long outboxId = esSyncOutboxService.enqueueUpsert(dataId, dataType(), fileUrls);
+        TransactionUtils.afterCommit(() -> triggerAsync(outboxId));
+        return outboxId;
     }
 
     /**
      * 业务事务内登记一次「删除」意图，提交后异步派发。
+     *
+     * @return 新插入的发件箱行 id
      */
-    public void enqueueDelete(Long dataId, String fileUrls) {
-        esSyncOutboxService.enqueueDelete(dataId, dataType(), fileUrls);
-        TransactionUtils.afterCommit(() -> triggerAsync(dataId));
+    public Long enqueueDelete(Long dataId, String fileUrls) {
+        Long outboxId = esSyncOutboxService.enqueueDelete(dataId, dataType(), fileUrls);
+        TransactionUtils.afterCommit(() -> triggerAsync(outboxId));
+        return outboxId;
     }
 
-    private void triggerAsync(Long dataId) {
-        CompletableFuture.runAsync(() -> dispatch(dataId), taskExecutor);
+    private void triggerAsync(Long outboxId) {
+        CompletableFuture.runAsync(() -> dispatch(outboxId), taskExecutor);
     }
 
     /**
-     * 派发单条发件箱：以行内 <b>当前</b> 版本号为准（派发时重新读取，天然合并已入队的更新意图）。
+     * 派发单条发件箱：以行 id 作为 ES 外部版本号派发。
      *
      * <p>执行顺序：ES 写入/删除 → 清理随行登记的外部文件（OSS）→ 标记成功。
      * 任一步骤失败都计数重试（ES 写入幂等、OSS 删除幂等，可安全重跑）。
      * 幂等、可重入：异步派发与定时补偿都调用本方法，重复执行安全。</p>
+     *
+     * @param outboxId 发件箱行 id（也是 ES external version）
      */
-    public void dispatch(Long dataId) {
-        EsSyncOutbox row = esSyncOutboxService.getPending(dataType(), dataId);
-        if (row == null) {
-            // 已被更新意图取代、或已同步完成
+    public void dispatch(Long outboxId) {
+        EsSyncOutbox row = esSyncOutboxService.getById(outboxId);
+        if (row == null || !RetryStatus.PENDING.equals(row.getStatus())) {
+            // 不存在 / 已被另一派发改掉 / 已同步完成
             return;
         }
-        long version = row.getEsVersion();
+        long version = row.getId();
         boolean isDelete = EsSyncOp.DELETE.equals(row.getOpType());
         try {
             try {
                 if (isDelete) {
-                    deleteEsDoc(dataId, version);
+                    deleteEsDoc(row.getDataId(), version);
                 } else {
-                    EsDTO esDTO = loadEsDTO(dataId);
+                    EsDTO esDTO = loadEsDTO(row.getDataId());
                     if (esDTO == null) {
                         // 意图是写入，但实体已不存在（如已删除）：降级为删除，避免 ES 残留脏数据
-                        deleteEsDoc(dataId, version);
+                        deleteEsDoc(row.getDataId(), version);
                     } else {
-                        esDTO.setUpdateTime(version);
-                        saveEsDoc(esDTO);
+                        saveEsDoc(esDTO, version);
                     }
                 }
             } catch (Exception e) {
@@ -100,18 +111,18 @@ public abstract class AbstractEsOutboxSyncService {
                 // 409：本次版本低于 ES 现值，说明已有更新版本落库，本意图被取代，视为达成；
                 // 404（删除）：删除目标不存在，同样视为已达成
                 if (status == 409 || (isDelete && status == 404)) {
-                    log.info("ES 同步已达成（被更新版本取代/目标不存在），dataType={}，dataId={}，status={}",
-                            dataType(), dataId, status);
+                    log.info("ES 同步已达成（被更新版本取代/目标不存在），dataType={}，outboxId={}，status={}",
+                            dataType(), outboxId, status);
                 } else {
                     throw e;
                 }
             }
             // ES 已达成：清理随行登记的外部文件（OSS）；清理失败则整体重试，ES 侧幂等安全
             deleteExternalFiles(splitFileUrls(row.getFileUrls()));
-            esSyncOutboxService.markSuccess(row.getId(), version);
+            esSyncOutboxService.markSuccess(outboxId);
         } catch (Exception e) {
-            log.error("ES 同步失败，dataType={}，dataId={}，等待定时补偿", dataType(), dataId, e);
-            esSyncOutboxService.incrRetryCount(row.getId(), version, e.getMessage());
+            log.error("ES 同步失败，dataType={}，outboxId={}，等待定时补偿", dataType(), outboxId, e);
+            esSyncOutboxService.incrRetryCount(outboxId, e.getMessage());
         }
     }
 
