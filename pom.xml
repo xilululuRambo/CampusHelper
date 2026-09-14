@@ -70,6 +70,22 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- STOMP 客户端（测试专用）：用于对 /ws 端点做真实 WebSocket 建连与 STOMP 帧交互，
+             验证 WebSocketAuthInterceptor（CONNECT 鉴权）与 ChatAuthInterceptor（SEND/SUBSCRIBE 兜底）。
+             仅 test 作用域，不进生产包。 -->
+        <dependency>
+            <groupId>org.glassfish.tyrus</groupId>
+            <artifactId>tyrus-client</artifactId>
+            <version>2.1.3</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.glassfish.tyrus</groupId>
+            <artifactId>tyrus-container-grizzly-client</artifactId>
+            <version>2.1.3</version>
+            <scope>test</scope>
+        </dependency>
+
         <!-- Mybatis-Plus 数据库操作框架 -->
         <dependency>
             <groupId>com.baomidou</groupId>
