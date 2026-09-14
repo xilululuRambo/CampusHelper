@@ -115,6 +115,10 @@ class GoodsOrderEdgeApiTest extends BaseApiTest {
         assertOk(post("/goods/buy/" + gId, null, buyer));
         Long oId = myLatestOrderId(buyer);
 
+        // 预热详情缓存：先读一次让缓存持有「交易中」，任务恢复状态后必须同步失效缓存
+        Map<?, ?> warmed = (Map<?, ?>) get("/goods/" + gId, buyer).getBody().get("data");
+        assertThat(String.valueOf(warmed.get("status"))).isEqualTo("1");
+
         // 把订单创建时间改到超时阈值之前（10 分钟过期）
         expireOrder(oId);
 
@@ -123,7 +127,10 @@ class GoodsOrderEdgeApiTest extends BaseApiTest {
         // 订单状态 → 已取消
         GoodsOrder order = goodsOrderService.getById(oId);
         assertThat(order.getOrderStatus()).isEqualTo(GoodsOrderStatus.CANCELLED);
-        // 商品状态 → 恢复在售
+        // 商品状态 → 恢复在售（走接口读：缓存已预热，验证状态流转同步失效详情缓存）
+        Map<?, ?> data = (Map<?, ?>) get("/goods/" + gId, buyer).getBody().get("data");
+        assertThat(String.valueOf(data.get("status"))).isEqualTo("0");
+        // 数据库状态兜底断言
         assertThat(goodsService.getById(gId).getStatus()).isEqualTo(GoodsStatus.NORMAL);
     }
 

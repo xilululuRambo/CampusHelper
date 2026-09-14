@@ -1,6 +1,8 @@
 package com.rambo.user;
 
 import com.rambo.BaseApiTest;
+import com.rambo.common.constants.NumConstants;
+import com.rambo.common.constants.PrefixConstants;
 import com.rambo.helper.AuthUser;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -74,6 +76,35 @@ class UserApiTest extends BaseApiTest {
         Map<String, String> body = Map.of("phone", "13700000000", "code", "123456");
         ResponseEntity<Map> resp = post("/user/login", body, null);
         assertFailWithMsg(resp, "验证码");
+    }
+
+    @Test
+    @DisplayName("登录：验证码连续错误达上限后作废，正确验证码也被拒（防暴力枚举）")
+    void login_wrongCodeTooManyTimes_invalidatesCode() {
+        String phone = "138" + (10000000 + (int) (Math.random() * 89999999));
+        assertOk(post("/user/code?phone=" + phone, null, null));
+        String realCode = redis.opsForValue().get(PrefixConstants.CODE_PREFIX + phone);
+        assertThat(realCode).isNotBlank();
+        String wrongCode = "000000".equals(realCode) ? "111111" : "000000";
+
+        // 连续错误尝试：前 N-1 次仅报验证码错误，第 N 次触发作废
+        for (int i = 0; i < NumConstants.USER_LOGIN_FAIL_LIMIT; i++) {
+            assertFail(post("/user/login", Map.of("phone", phone, "code", wrongCode), null));
+        }
+
+        // 验证码已作废：即使输入正确验证码也被拒（尝试次数被限制为每枚验证码 N 次，无法无限枚举）
+        assertFailWithMsg(post("/user/login", Map.of("phone", phone, "code", realCode), null), "验证码");
+
+        // 重新获取验证码：新码重置失败计数（跳过 60s 冷却便于用例执行）
+        redis.delete(PrefixConstants.CODE_COOLDOWN_TIME_PREFIX + phone);
+        assertOk(post("/user/code?phone=" + phone, null, null));
+        String newCode = redis.opsForValue().get(PrefixConstants.CODE_PREFIX + phone);
+        assertThat(newCode).isNotBlank();
+
+        // 新码试错一次后仍可正常登录（计数已随新码重置，而非沿用旧验证码的失败次数）
+        String anotherWrong = newCode.equals("000000") ? "111111" : "000000";
+        assertFail(post("/user/login", Map.of("phone", phone, "code", anotherWrong), null));
+        assertOk(post("/user/login", Map.of("phone", phone, "code", newCode), null));
     }
 
     // ==================== 我的信息 /user/me ====================

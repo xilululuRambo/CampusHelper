@@ -7,7 +7,6 @@ import com.rambo.common.constants.NumConstants;
 import com.rambo.common.constants.PrefixConstants;
 import com.rambo.module.notification.enums.NotificationType;
 import com.rambo.module.goods.enums.GoodsOrderStatus;
-import com.rambo.module.goods.enums.GoodsStatus;
 import com.rambo.common.exception.BusinessException;
 import com.rambo.module.operationlog.annotation.Log;
 import com.rambo.module.operationlog.enums.OperationActionEnum;
@@ -16,7 +15,6 @@ import com.rambo.module.operationlog.enums.OperationTargetTypeEnum;
 import com.rambo.common.context.IdHolder;
 import com.rambo.infrastructure.database.TransactionUtils;
 import com.rambo.module.chat.server.service.ChatSessionService;
-import com.rambo.module.goods.pojo.entity.Goods;
 import com.rambo.module.goods.pojo.entity.GoodsOrder;
 import com.rambo.module.goods.server.service.GoodsOrderService;
 import com.rambo.module.goods.server.service.GoodsService;
@@ -90,17 +88,11 @@ public class GoodsWorkflowServiceImpl implements GoodsWorkflowService {
             throw new BusinessException(MessageConstants.GOODS_ORDER_CONFIRM_ERROR);
         }
 
-        // 更新商品状态为已出售
-        isSuccess = goodsService.lambdaUpdate()
-                .eq(Goods::getId, goodsOrder.getGoodsId())
-                .eq(Goods::getStatus, GoodsStatus.TRADING)
-                .set(Goods::getStatus, GoodsStatus.SOLD_OUT)
-                .update();
+        // 更新商品状态为已出售（CAS 仅交易中可流转，经 goods 域统一出口：状态变更与详情缓存失效同处收敛）
+        isSuccess = goodsService.markSoldOutIfTrading(goodsOrder.getGoodsId());
         if (!isSuccess) {
             throw new BusinessException(MessageConstants.GOODS_ORDER_CONFIRM_ERROR);
         }
-        // 商品状态已变更（CAS 直改绕过 @CacheEvict 业务方法）：显式失效详情缓存，防止残留旧状态
-        goodsService.evictGoodsDetail(goodsOrder.getGoodsId());
         // 商品状态已变更（TRADING -> SOLD_OUT）：事务内登记 ES 同步意图，已售出的商品不应再出现在搜索结果
         goodsEsSyncService.syncToEsAsync(goodsOrder.getGoodsId());
 
@@ -171,17 +163,11 @@ public class GoodsWorkflowServiceImpl implements GoodsWorkflowService {
                 throw new BusinessException(MessageConstants.GOODS_ORDER_CANCEL_ERROR);
             }
 
-            // 恢复商品状态：仅当商品处于交易中且未被管理员强制下架时才恢复在售
-            // 管理员下架的商品状态为 DISABLED（adminDisabled=1），此处匹配不到则跳过恢复，不阻塞订单取消
-            Goods goods = goodsService.getById(goodsOrder.getGoodsId());
-            if (goods != null && goods.getStatus() == GoodsStatus.TRADING && !Boolean.TRUE.equals(goods.getAdminDisabled())) {
-                goods.setStatus(GoodsStatus.NORMAL);
-                boolean updated = goodsService.updateById(goods);
-                if (!updated) {
-                    throw new BusinessException(MessageConstants.GOODS_ORDER_CANCEL_ERROR);
-                }
+            // 恢复商品状态：CAS 仅交易中可流转（管理员下架的商品状态为 DISABLED，匹配不到则跳过恢复，
+            // 不阻塞订单取消）；状态变更与详情缓存失效收敛在 goods 域统一出口，避免缓存残留「交易中」
+            if (goodsService.restoreToNormalIfTrading(goodsOrder.getGoodsId())) {
                 // 商品状态已变更（TRADING -> NORMAL）：事务内登记 ES 同步意图，取消后应重新可被搜到
-                goodsEsSyncService.syncToEsAsync(goods);
+                goodsEsSyncService.syncToEsAsync(goodsOrder.getGoodsId());
             }
 
             // 结束会话（订单取消，买卖双方沟通终止；事务提交后关闭，回滚则会话保持打开）

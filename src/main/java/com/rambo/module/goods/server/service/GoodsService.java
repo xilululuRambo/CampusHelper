@@ -70,8 +70,20 @@ public interface GoodsService extends IService<Goods> {
     void buyGoods(Long id);
 
     /**
-     * 主动失效商品详情缓存（供绕过本类方法的商品状态变更路径调用，如订单工作流、超时关单 Job）
-     * @param id 商品ID
+     * 订单域状态流转统一出口：交易中 → 已售出（买家确认收货）。
+     * <p>订单工作流与超时关单 Job 出于 CAS 并发条件需要直改商品状态，统一经本方法流转：
+     * 「DB 状态变更 + 详情缓存失效」在同一处收敛（{@code @CacheEvict}），
+     * 不再依赖各写路径人工逐个补失效。裸写 lambdaUpdate/updateById 直改状态属违规操作。</p>
+     * @param goodsId 商品ID
+     * @return 是否实际完成流转（false=商品已不在交易中，调用方据此跳过后续联动）
      */
-    void evictGoodsDetail(Long id);
+    boolean markSoldOutIfTrading(Long goodsId);
+
+    /**
+     * 订单域状态流转统一出口：交易中 → 在售（用户取消订单 / 超时关单恢复）。
+     * <p>管理员强制下架的商品状态为 DISABLED，CAS 条件匹配不到则跳过恢复，不阻塞订单取消。</p>
+     * @param goodsId 商品ID
+     * @return 是否实际完成流转（false=商品已不在交易中，调用方据此跳过后续联动）
+     */
+    boolean restoreToNormalIfTrading(Long goodsId);
 }

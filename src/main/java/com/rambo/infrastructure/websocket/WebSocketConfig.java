@@ -84,7 +84,9 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                     .setClientLogin(webSocketProperties.getClientLogin())
                     .setClientPasscode(webSocketProperties.getClientPasscode())
                     .setSystemLogin(webSocketProperties.getSystemLogin())
-                    .setSystemPasscode(webSocketProperties.getSystemPasscode());
+                    .setSystemPasscode(webSocketProperties.getSystemPasscode())
+                    .setUserDestinationBroadcast("/topic/unresolved-user-destination")
+                    .setUserRegistryBroadcast("/topic/user-registry-broadcast");
         }
         registry.setApplicationDestinationPrefixes("/app");
     }

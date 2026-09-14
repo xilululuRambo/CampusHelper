@@ -54,6 +54,8 @@ public class NumConstants {
     public static final int ADMIN_LOGIN_FAIL_LIMIT = 5;
     //管理员登录失败锁定时间（分钟）
     public static final int ADMIN_LOGIN_LOCK_MINUTES = 15;
+    //用户验证码登录失败上限（次，达到即作废当前验证码；与管理员登录共用失败计数机制）
+    public static final int USER_LOGIN_FAIL_LIMIT = 5;
 
     //用户收货地址数量上限
     public static final int ADDRESS_MAX_COUNT = 3;

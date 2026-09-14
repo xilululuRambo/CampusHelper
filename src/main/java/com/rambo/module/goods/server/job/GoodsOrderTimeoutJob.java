@@ -2,12 +2,10 @@ package com.rambo.module.goods.server.job;
 
 import com.rambo.common.constants.NumConstants;
 import com.rambo.common.constants.PrefixConstants;
-import com.rambo.module.goods.enums.GoodsStatus;
 import com.rambo.common.exception.BusinessException;
 import com.rambo.infrastructure.cache.LockClient;
 import com.rambo.module.chat.server.service.ChatSessionService;
 import com.rambo.module.goods.enums.GoodsOrderStatus;
-import com.rambo.module.goods.pojo.entity.Goods;
 import com.rambo.module.goods.pojo.entity.GoodsOrder;
 import com.rambo.module.goods.server.service.GoodsOrderService;
 import com.rambo.module.goods.server.service.GoodsService;
@@ -98,22 +96,19 @@ public class GoodsOrderTimeoutJob {
             return;
         }
 
-        // 仅恢复被真正取消订单的商品为在售（仍带 TRADING 状态条件，防止与并发购买冲突）
-        List<Long> goodsIds = list.stream()
-                .filter(order -> cancelledIds.contains(order.getId()))
-                .map(GoodsOrder::getGoodsId).distinct().toList();
-        goodsService.lambdaUpdate()
-                .in(Goods::getId, goodsIds)
-                .eq(Goods::getStatus, GoodsStatus.TRADING)
-                .set(Goods::getStatus, GoodsStatus.NORMAL)
-                .update();
-        // 商品状态已变更（Job 直改绕过 @CacheEvict 业务方法）：逐个失效详情缓存，防止残留旧状态
-        for (Long goodsId : goodsIds) {
-            goodsService.evictGoodsDetail(goodsId);
-            // 商品状态已变更（TRADING -> NORMAL）：登记 ES 同步意图，超时释放的商品应重新可被搜到。
-            // 注意：Job 内逐单 CAS 相互独立、不做大事务，此处 outbox 意图与状态更新是两条独立提交，
-            // 派发由异步 + XXL-JOB 补偿双保险兜底。
-            goodsEsSyncService.syncToEsAsync(goodsId);
+        // 仅恢复被真正取消订单的商品为在售：逐个 CAS（仍带 TRADING 状态条件，防止与并发购买冲突），
+        // 状态变更与详情缓存失效收敛在 goods 域统一出口；仅实际完成流转的商品登记 ES 同步意图
+        for (GoodsOrder order : list) {
+            if (!cancelledIds.contains(order.getId())) {
+                continue;
+            }
+            Long goodsId = order.getGoodsId();
+            if (goodsService.restoreToNormalIfTrading(goodsId)) {
+                // 商品状态已变更（TRADING -> NORMAL）：登记 ES 同步意图，超时释放的商品应重新可被搜到。
+                // 注意：Job 内逐单 CAS 相互独立、不做大事务，此处 outbox 意图与状态更新是两条独立提交，
+                // 派发由异步 + XXL-JOB 补偿双保险兜底。
+                goodsEsSyncService.syncToEsAsync(goodsId);
+            }
         }
 
         // 关闭对应会话（历史订单可能无会话记录，跳过不中断批量任务）

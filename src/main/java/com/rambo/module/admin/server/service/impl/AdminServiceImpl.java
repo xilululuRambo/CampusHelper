@@ -15,6 +15,7 @@ import com.rambo.module.operationlog.enums.OperationTargetTypeEnum;
 import com.rambo.common.result.PageResult;
 import com.rambo.infrastructure.auth.BCryptUtil;
 import com.rambo.infrastructure.auth.JwtUtil;
+import com.rambo.infrastructure.auth.LoginFailCounter;
 import com.rambo.common.utils.RegexUtil;
 import com.rambo.infrastructure.auth.AccessTokenHolder;
 import com.rambo.common.context.IdHolder;
@@ -53,6 +54,8 @@ public class AdminServiceImpl extends ServiceImpl<AdminMapper, Admin> implements
     private CacheClient cacheClient;
     @Resource
     private JwtProperties jwtProperties;
+    @Resource
+    private LoginFailCounter loginFailCounter;
 
 
     /**
@@ -66,9 +69,10 @@ public class AdminServiceImpl extends ServiceImpl<AdminMapper, Admin> implements
         //校验登录DTO
         validateLoginDTO(adminLoginDTO.getAccount(), adminLoginDTO.getPassword());
 
-        //登录失败锁定：此处不做 hasKey 判断——recordLoginFail 内部按计数 >= 5 才抛锁定。
+        //登录失败锁定：此处不做 hasKey 判断——失败计数内部按计数 >= 5 才抛锁定。
         //若用 hasKey 判断，第 1 次失败即建 key，第 2 次请求（无论密码对错）直接命中"已锁定"，
         //攻击者 1 次错误密码即可锁死账号 15 分钟（可被 DoS），"连续 5 次"阈值永远达不到。
+        //计数机制复用 LoginFailCounter（与用户验证码登录共用同一套实现）
         String failKey = PrefixConstants.ADMIN_LOGIN_FAIL + adminLoginDTO.getAccount();
 
         //查找数据库是否存在该账号的管理员，且状态为正常（禁用账号不允许登录）
@@ -91,14 +95,12 @@ public class AdminServiceImpl extends ServiceImpl<AdminMapper, Admin> implements
 
         //锁定中即使密码正确也拒绝登录（锁定 15 分钟内不可绕过；成功路径必须复查，
         //否则"连续 5 次失败"后第 6 次蒙对密码即清空计数，锁定形同虚设）
-        String failCount = cacheClient.get(failKey);
-        if (failCount != null
-                && Long.parseLong(failCount) >= NumConstants.ADMIN_LOGIN_FAIL_LIMIT) {
+        if (loginFailCounter.count(failKey) >= NumConstants.ADMIN_LOGIN_FAIL_LIMIT) {
             throw new BusinessException(MessageConstants.ADMIN_LOGIN_LOCKED);
         }
 
         //登录成功，清除失败计数
-        cacheClient.delete(failKey);
+        loginFailCounter.clear(failKey);
 
         //生成载荷Claims：携带角色标记，供 JwtInterceptor 统一分流（超管与普通管理员分开签发）
         Map<String, Object> claims = new HashMap<>();
@@ -385,14 +387,12 @@ public class AdminServiceImpl extends ServiceImpl<AdminMapper, Admin> implements
     }
 
     /**
-     * 记录一次登录失败；达到 5 次时抛锁定异常（key 15 分钟过期）
+     * 记录一次登录失败；达到 5 次时抛锁定异常（key 15 分钟过期）。
+     * 计数机制复用 {@link LoginFailCounter}（与用户验证码登录同一套），策略在本层：连续 5 次锁定 15 分钟
      */
     private void recordLoginFail(String failKey) {
-        Long fails = cacheClient.increment(failKey);
-        if (fails != null && fails == 1L) {
-            cacheClient.expire(failKey, NumConstants.ADMIN_LOGIN_LOCK_MINUTES, TimeUnit.MINUTES);
-        }
-        if (fails != null && fails >= NumConstants.ADMIN_LOGIN_FAIL_LIMIT) {
+        long fails = loginFailCounter.record(failKey, NumConstants.ADMIN_LOGIN_LOCK_MINUTES);
+        if (fails >= NumConstants.ADMIN_LOGIN_FAIL_LIMIT) {
             throw new BusinessException(MessageConstants.ADMIN_LOGIN_LOCKED);
         }
     }

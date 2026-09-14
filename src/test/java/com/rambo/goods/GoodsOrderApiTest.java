@@ -140,9 +140,13 @@ class GoodsOrderApiTest extends BaseApiTest {
         assertOk(post("/goods/buy/" + gId, null, b));
         Long oId = myLatestOrderId(b);
 
+        // 预热详情缓存：先读一次让缓存持有「交易中」；否则缓存为空时取消后回源必然读到新状态，测不出缓存未失效
+        Map<?, ?> warmed = (Map<?, ?>) get("/goods/" + gId, s).getBody().get("data");
+        assertThat(String.valueOf(warmed.get("status"))).isEqualTo("1");
+
         assertOk(post("/goods/order/cancel/" + oId, null, b));
 
-        // 商品状态恢复 → 在售(0)
+        // 商品状态恢复 → 在售(0)（取消必须同步失效详情缓存，否则此处命中缓存仍读到「交易中」）
         Map<?, ?> data = (Map<?, ?>) get("/goods/" + gId, s).getBody().get("data");
         assertThat(String.valueOf(data.get("status"))).isEqualTo("0");
     }

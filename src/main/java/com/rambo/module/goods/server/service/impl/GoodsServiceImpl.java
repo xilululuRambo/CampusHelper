@@ -317,17 +317,42 @@ public class GoodsServiceImpl extends ServiceImpl<GoodsMapper, Goods> implements
     }
 
     /**
-     * 主动失效商品详情缓存（供「绕过本类方法的商品状态变更路径」调用）。
+     * 订单域状态流转统一出口：交易中 → 已售出（买家确认收货）。
      *
-     * <p>订单工作流 {@code GoodsWorkflowServiceImpl.confirmOrder} 与超时关单 Job
-     * {@code GoodsOrderTimeoutJob} 出于 CAS 并发条件需要，直接用 {@code lambdaUpdate()}
-     * 更新商品状态，绕过了带 {@code @CacheEvict} 的业务方法。本方法提供显式失效点，
-     * 保证「DB 状态变更 → 缓存失效」的 cache-aside 一致性，否则详情缓存会残留旧状态
-     * （如确认收货后商品详情仍显示「交易中」）。</p>
+     * <p>订单工作流与超时关单 Job 出于 CAS 并发条件需要直改商品状态，统一经本方法流转：
+     * 「DB 状态变更 + 详情缓存失效」在同一处收敛（{@code @CacheEvict}），不再依赖各写路径
+     * 人工逐个补失效——人工补漏的路径（如用户取消订单）曾导致详情缓存残留「交易中」旧状态。</p>
+     *
+     * @param goodsId 商品ID
+     * @return 是否实际完成流转（false=商品已不在交易中，调用方据此跳过后续联动）
      */
-    @CacheEvict(cacheNames = CacheConstants.GOODS_DETAIL, key = "#id")
-    public void evictGoodsDetail(Long id) {
-        // 方法体为空：仅触发 @CacheEvict，由 Spring 缓存代理在方法调用后清除对应缓存
+    @Override
+    @CacheEvict(cacheNames = CacheConstants.GOODS_DETAIL, key = "#goodsId")
+    public boolean markSoldOutIfTrading(Long goodsId) {
+        return lambdaUpdate()
+                .eq(Goods::getId, goodsId)
+                .eq(Goods::getStatus, GoodsStatus.TRADING)
+                .set(Goods::getStatus, GoodsStatus.SOLD_OUT)
+                .update();
+    }
+
+    /**
+     * 订单域状态流转统一出口：交易中 → 在售（用户取消订单 / 超时关单恢复）。
+     *
+     * <p>管理员强制下架的商品状态为 DISABLED，CAS 条件匹配不到则跳过恢复，不阻塞订单取消；
+     * 详情缓存失效与状态变更同处收敛，避免缓存残留「交易中」。</p>
+     *
+     * @param goodsId 商品ID
+     * @return 是否实际完成流转（false=商品已不在交易中，调用方据此跳过后续联动）
+     */
+    @Override
+    @CacheEvict(cacheNames = CacheConstants.GOODS_DETAIL, key = "#goodsId")
+    public boolean restoreToNormalIfTrading(Long goodsId) {
+        return lambdaUpdate()
+                .eq(Goods::getId, goodsId)
+                .eq(Goods::getStatus, GoodsStatus.TRADING)
+                .set(Goods::getStatus, GoodsStatus.NORMAL)
+                .update();
     }
 
     /**

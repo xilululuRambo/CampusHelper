@@ -48,6 +48,8 @@ public class PrefixConstants {
     public static final String USER_TOKENS = "user_tokens:";
     // 登录失败计数前缀（5 次锁定 15 分钟）
     public static final String ADMIN_LOGIN_FAIL = "admin_login_fail:";
+    // 用户验证码登录失败计数前缀（与管理员登录共用失败计数机制，达到上限作废当前验证码）
+    public static final String USER_LOGIN_FAIL = "user_login_fail:";
     // 管理员 Refresh Token Hash key 前缀
     public static final String ADMIN_TOKENS = "admin_tokens:";
     // Refresh Token 刷新锁前缀

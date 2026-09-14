@@ -18,6 +18,7 @@ import com.rambo.common.context.IdHolder;
 import com.rambo.infrastructure.database.TransactionUtils;
 import com.rambo.infrastructure.storage.AliyunOssUtil;
 import com.rambo.infrastructure.auth.JwtUtil;
+import com.rambo.infrastructure.auth.LoginFailCounter;
 import com.rambo.common.utils.RegexUtil;
 import com.rambo.module.user.pojo.dto.LoginDTO;
 import com.rambo.module.user.pojo.dto.UserAuthDTO;
@@ -51,6 +52,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
     @Resource
     private CacheClient cacheClient;
     @Resource
+    private LoginFailCounter loginFailCounter;
+    @Resource
     private JwtUtil jwtUtil;
     @Resource
     private StudentService studentService;
@@ -83,6 +86,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
 
             // 存储验证码到Redis
             cacheClient.set(PrefixConstants.CODE_PREFIX + phone, code, NumConstants.CODE_EXPIRE_MINUTES, TimeUnit.MINUTES);
+            // 新验证码签发即重置失败计数：每枚验证码独立享有固定次数的尝试额度
+            loginFailCounter.clear(PrefixConstants.USER_LOGIN_FAIL + phone);
 
             // 发送验证码到手机号（验证码属凭证，不落日志，防止日志泄露后任意账号可登录）
             log.info("模拟发送验证码到手机号：{}", phone);
@@ -114,6 +119,14 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
 
         //校验验证码是否正确
         if (!loginDTO.getCode().equals(code)) {
+            // 失败计数（与管理员密码登录共用 LoginFailCounter）：达到上限即作废当前验证码，
+            // 需重新获取验证码才能继续尝试。否则 6 位验证码在有效期内可被无限枚举，可暴力破解任意手机号登录
+            long fails = loginFailCounter.record(PrefixConstants.USER_LOGIN_FAIL + loginDTO.getPhone(),
+                    NumConstants.CODE_EXPIRE_MINUTES);
+            if (fails >= NumConstants.USER_LOGIN_FAIL_LIMIT) {
+                cacheClient.delete(PrefixConstants.CODE_PREFIX + loginDTO.getPhone());
+                throw new BusinessException(MessageConstants.CODE_FAIL_LIMIT);
+            }
             throw new BusinessException(MessageConstants.CODE_ERROR);
         }
 
@@ -153,8 +166,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         // 登录成功
         log.info("用户登录成功，手机号：{}", loginDTO.getPhone());
 
-        // 清除Redis中的验证码
+        // 清除Redis中的验证码与失败计数
         cacheClient.delete(PrefixConstants.CODE_PREFIX + loginDTO.getPhone());
+        loginFailCounter.clear(PrefixConstants.USER_LOGIN_FAIL + loginDTO.getPhone());
 
         //返回token给前端
         Map<String, Object> map = new HashMap<>();

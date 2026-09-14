@@ -16,6 +16,8 @@ public class MessageConstants {
     // ==================== 用户/认证 ====================
     public static final String PHONE_ERROR = "手机号格式错误";
     public static final String CODE_ERROR = "验证码错误";
+    // 验证码错误次数达上限（当前验证码已作废，需重新获取后才能继续尝试）
+    public static final String CODE_FAIL_LIMIT = "验证码错误次数过多，请重新获取";
     public static final String USER_NOT_EXIST = "用户不存在";
     public static final String UNAUTHORIZED = "未登录或登录已失效，请重新登录";
     public static final String CODE_COOLDOWN_ERROR = "验证码冷却中，请稍后再试";
