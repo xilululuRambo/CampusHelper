@@ -95,12 +95,13 @@ public abstract class AbstractEsOutboxSyncService {
                         saveEsDoc(esDTO);
                     }
                 }
-            } catch (ElasticsearchException e) {
+            } catch (Exception e) {
+                int status = esErrorStatus(e);
                 // 409：本次版本低于 ES 现值，说明已有更新版本落库，本意图被取代，视为达成；
                 // 404（删除）：删除目标不存在，同样视为已达成
-                if (e.status() == 409 || (isDelete && e.status() == 404)) {
+                if (status == 409 || (isDelete && status == 404)) {
                     log.info("ES 同步已达成（被更新版本取代/目标不存在），dataType={}，dataId={}，status={}",
-                            dataType(), dataId, e.status());
+                            dataType(), dataId, status);
                 } else {
                     throw e;
                 }
@@ -112,6 +113,34 @@ public abstract class AbstractEsOutboxSyncService {
             log.error("ES 同步失败，dataType={}，dataId={}，等待定时补偿", dataType(), dataId, e);
             esSyncOutboxService.incrRetryCount(row.getId(), version, e.getMessage());
         }
+    }
+
+    /**
+     * 从 ES 异常中提取 HTTP 状态码；无法识别时返回 {@code -1}（即「不是可忽略的版本冲突」）。
+     *
+     * <p><b>为什么不能只 catch {@code ElasticsearchException}（本次端到端测试挖出的真实 bug）</b>：
+     * 本项目用 {@code RestClientTransport} 构造 {@code ElasticsearchClient}，其 4xx/5xx
+     * 响应是以 {@link org.elasticsearch.client.ResponseException} 抛出的——该类型
+     * <b>继承 {@code java.io.IOException}</b>；而
+     * {@code co.elastic.clients.elasticsearch._types.ElasticsearchException}
+     * <b>继承 {@code RuntimeException}</b>。二者属于完全不相干的两条继承链，
+     * 因此原实现里 {@code catch (ElasticsearchException)} <b>在真实 ES 上永不命中</b>：
+     * 版本冲突（409）会被当成普通失败计入重试，反复重投直到 {@code retryCount}
+     * 触顶被标记 FAILED，而真正的语义是「本次意图已被更新版本取代，属达成」。</p>
+     *
+     * <p>本方法把两种形态统一成状态码：{@code ResponseException} 直接读
+     * {@code getResponse().getStatusLine().getStatusCode()}；若调用方换回会抛
+     * {@code ElasticsearchException} 的 transport，则读其 {@code status()}。
+     * 这样无论底层客户端如何包装，判定逻辑都只有一份。</p>
+     */
+    private static int esErrorStatus(Exception e) {
+        if (e instanceof org.elasticsearch.client.ResponseException re) {
+            return re.getResponse().getStatusLine().getStatusCode();
+        }
+        if (e instanceof ElasticsearchException ee) {
+            return ee.status();
+        }
+        return -1;
     }
 
     /**
