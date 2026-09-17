@@ -1,4 +1,6 @@
 # CampusHelper 校园互助系统
+# 已于9月份从gitee平台迁移到Github平台。
+# 原gitee仓库地址：https://gitee.com/xilululu/campus-helper.git
 
 <div align="center">
 
